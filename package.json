@@ -1,0 +1,48 @@
+{
+  "name": "espocrm-ai-backend",
+  "version": "1.0.0",
+  "description": "AI Backend service for EspoCRM - bridges Gemini function calling with MCP CRM tools",
+  "license": "MIT",
+  "author": "JuntoAI",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JuntoAI/espocrm-ai-backend.git"
+  },
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "test": "cross-env NODE_OPTIONS=--experimental-vm-modules npx jest",
+    "test:unit": "cross-env NODE_OPTIONS=--experimental-vm-modules npx jest --testPathPattern=tests/unit",
+    "test:properties": "cross-env NODE_OPTIONS=--experimental-vm-modules npx jest --testPathPattern=tests/properties",
+    "test:integration": "cross-env NODE_OPTIONS=--experimental-vm-modules npx jest --testPathPattern=tests/integration",
+    "lint": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@google-cloud/vertexai": "1.10.0",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "axios": "1.15.0",
+    "express": "5.1.0",
+    "multer": "2.1.1",
+    "uuid": "11.1.0",
+    "winston": "3.17.0"
+  },
+  "devDependencies": {
+    "@jest/globals": "29.7.0",
+    "@types/express": "5.0.2",
+    "@types/multer": "2.1.0",
+    "@types/node": "20.17.57",
+    "@types/uuid": "10.0.0",
+    "cross-env": "7.0.3",
+    "fast-check": "3.23.2",
+    "jest": "29.7.0",
+    "ts-jest": "29.3.4",
+    "tsx": "4.19.4",
+    "typescript": "5.8.3"
+  }
+}

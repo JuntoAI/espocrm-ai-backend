@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+.env
+*.tsbuildinfo
+credentials.json
+mcp-server/
+.DS_Store
+.idea/
+.vscode/
+.kiro/
