@@ -294,15 +294,15 @@ export async function executeSequentialToolCalls(
 const TOOL_CATEGORIES: Record<string, { keywords: RegExp; tools: string[] }> = {
   contacts: {
     keywords: /\b(contact|person|people|email|phone|department)\b/i,
-    tools: ['create_contact', 'search_contacts', 'get_contact'],
+    tools: ['create_contact', 'search_contacts', 'get_contact', 'update_entity'],
   },
   accounts: {
     keywords: /\b(account|company|companies|organization|business|customer|investor|partner|reseller)\b/i,
-    tools: ['create_account', 'search_accounts'],
+    tools: ['create_account', 'search_accounts', 'update_entity', 'get_entity'],
   },
   opportunities: {
     keywords: /\b(opportunit|deal|pipeline|revenue|sales|close date|proposal|won|lost)\b/i,
-    tools: ['create_opportunity', 'search_opportunities'],
+    tools: ['create_opportunity', 'search_opportunities', 'update_entity'],
   },
   leads: {
     keywords: /\b(lead|prospect|convert|assign.*lead)\b/i,
@@ -337,7 +337,7 @@ const TOOL_CATEGORIES: Record<string, { keywords: RegExp; tools: string[] }> = {
     tools: ['search_users', 'get_user_by_email'],
   },
   entities: {
-    keywords: /\b(entity|entities|link|unlink|relationship|delete|generic|custom)\b/i,
+    keywords: /\b(entity|entities|link|unlink|relationship|delete|generic|custom|update|edit|modify|change|enrich|add.*field|set.*field|fill.*in)\b/i,
     tools: ['create_entity', 'search_entity', 'get_entity', 'update_entity', 'delete_entity', 'link_entities', 'unlink_entities', 'get_entity_relationships'],
   },
   health: {
@@ -345,7 +345,7 @@ const TOOL_CATEGORIES: Record<string, { keywords: RegExp; tools: string[] }> = {
     tools: ['health_check'],
   },
   web: {
-    keywords: /\b(website|webpage|url|http|https|fetch|browse|visit|check.*site|look.*at|analyze.*page|investor.*site|portfolio.*page|linkedin|crunchbase)\b/i,
+    keywords: /\b(website|webpage|url|http|https|fetch|browse|visit|check.*site|look.*at|analyze.*page|investor.*site|portfolio.*page|linkedin|crunchbase|enrich|research)\b/i,
     tools: ['fetch_url'],
   },
 };
