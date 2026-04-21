@@ -32,6 +32,8 @@ import { getUserFriendlyMessage } from './utils/error-sanitizer.js';
 import { logger } from './utils/logger.js';
 import { fetchUrl } from './services/web-fetcher.js';
 import type { Content } from '@google-cloud/vertexai';
+import type { FileAttachment } from './services/gemini-service.js';
+import type { FileContext } from './services/session-manager.js';
 
 // ────────────────────────────────────────────────────────────────
 // Types
@@ -141,7 +143,12 @@ export function createServer(deps: ServerDependencies): Express {
         const history = buildHistory(sessionManager.getHistory(user.userId));
         const pdfContext = sessionManager.getPdfContext(user.userId);
 
-        // 6. Call Gemini with function call loop
+        // 6. Call Gemini with function call loop (include any uploaded files)
+        const sessionFiles = sessionManager.getFiles(user.userId);
+        const fileAttachments = sessionFiles.length > 0
+          ? await buildFileAttachments(sessionFiles)
+          : undefined;
+
         const chatResult: ChatResult = await geminiService.chat({
           message,
           history,
@@ -160,6 +167,7 @@ export function createServer(deps: ServerDependencies): Express {
           },
           model: sessionManager.getModel(user.userId),
           pdfContext: pdfContext?.extractedText,
+          files: fileAttachments,
         });
 
         // 7. Store messages in session
@@ -229,47 +237,48 @@ export function createServer(deps: ServerDependencies): Express {
         const file = req.file as Express.Multer.File | undefined;
         if (!file) {
           res.status(400).json({
-            error: 'No file uploaded. Please upload a PDF file.',
+            error: 'No file uploaded. Please upload a supported file (PDF, PNG, JPEG, GIF, WebP, TXT, CSV, HTML).',
           });
           return;
         }
 
-        // 3. Process PDF upload — extract text via Gemini
-        const uploadedFile: UploadedFile = {
-          originalname: file.originalname,
-          mimetype: file.mimetype,
-          size: file.size,
-          path: file.path,
-          filename: file.filename,
-        };
+        // 3. Store file reference in session (no text extraction — Gemini reads files natively)
+        const { readFile } = await import('fs/promises');
+        const fileBuffer = await readFile(file.path);
+        const base64Data = fileBuffer.toString('base64');
 
-        const uploadResult = await pdfHandler.handleUpload(
-          uploadedFile,
-          sessionManager,
-          user.userId,
-          async (_buffer: Buffer, _mimeType: string) => {
-            // Use Gemini to extract text from the PDF
-            const extractResult = await geminiService.chat({
-              message: 'Extract and summarize the text content from this PDF document. Return the full text content.',
-              history: [],
-              onToolCall: async () => ({}),
-              model: sessionManager.getModel(user.userId),
-            });
-            return extractResult.message;
-          },
-        );
+        sessionManager.addFile(user.userId, {
+          filename: file.originalname,
+          mimeType: file.mimetype,
+          filePath: file.path,
+          size: file.size,
+          uploadedAt: new Date(),
+        });
+
+        // Schedule file cleanup after 5 minutes
+        pdfHandler.scheduleFileDeletionPublic(file.path);
+
+        logger.info('File uploaded', {
+          userId: user.userId,
+          filename: file.originalname,
+          mimeType: file.mimetype,
+          size: file.size,
+        });
 
         // 4. Get or create session
         const session = sessionManager.getOrCreate(user.userId);
 
-        // 5. If a message was included, process it with Gemini (with PDF context)
+        // 5. If a message was included, process it with Gemini (with file as inline data)
         const bodyMessage = typeof req.body?.message === 'string'
           ? req.body.message.trim()
           : '';
 
         if (bodyMessage.length > 0) {
           const history = buildHistory(sessionManager.getHistory(user.userId));
-          const pdfContext = sessionManager.getPdfContext(user.userId);
+
+          // Build file attachments from all session files
+          const allFiles = sessionManager.getFiles(user.userId);
+          const fileAttachments = await buildFileAttachments(allFiles);
 
           const chatResult = await geminiService.chat({
             message: bodyMessage,
@@ -287,7 +296,7 @@ export function createServer(deps: ServerDependencies): Express {
               return result.data;
             },
             model: sessionManager.getModel(user.userId),
-            pdfContext: pdfContext?.extractedText,
+            files: fileAttachments,
           });
 
           sessionManager.addMessage(user.userId, {
@@ -317,8 +326,9 @@ export function createServer(deps: ServerDependencies): Express {
         }
 
         // No message — just return upload confirmation
+        const fileCount = sessionManager.getFiles(user.userId).length;
         res.json({
-          message: `PDF "${uploadResult.originalFilename}" uploaded and processed. You can now ask questions about its content.`,
+          message: `"${file.originalname}" uploaded successfully (${fileCount} file${fileCount > 1 ? 's' : ''} in session). You can now ask questions about ${fileCount > 1 ? 'them' : 'it'}.`,
           sessionId: session.id,
         } satisfies ChatResponse);
       } catch (err) {
@@ -373,4 +383,32 @@ function buildHistory(
     role: msg.role === 'assistant' ? 'model' : 'user',
     parts: [{ text: msg.content }],
   }));
+}
+
+/**
+ * Read session files from disk and convert to Gemini FileAttachment format.
+ * Silently skips files that no longer exist on disk.
+ */
+async function buildFileAttachments(files: FileContext[]): Promise<FileAttachment[]> {
+  const { readFile } = await import('fs/promises');
+  const attachments: FileAttachment[] = [];
+
+  for (const file of files) {
+    try {
+      const buffer = await readFile(file.filePath);
+      attachments.push({
+        mimeType: file.mimeType,
+        data: buffer.toString('base64'),
+        filename: file.filename,
+      });
+    } catch {
+      // File may have been cleaned up — skip silently
+      logger.debug('buildFileAttachments: file not found, skipping', {
+        filename: file.filename,
+        path: file.filePath,
+      });
+    }
+  }
+
+  return attachments;
 }

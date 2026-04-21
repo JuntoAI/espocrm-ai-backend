@@ -28,12 +28,17 @@ export interface ConversationMessage {
   toolCalls?: ToolCallRecord[];
 }
 
-/** PDF document context attached to a session. */
-export interface PdfContext {
+/** Uploaded file context attached to a session. */
+export interface FileContext {
   filename: string;
-  extractedText: string;
+  mimeType: string;
+  filePath: string;
+  size: number;
   uploadedAt: Date;
 }
+
+/** @deprecated Use FileContext instead */
+export type PdfContext = FileContext & { extractedText: string };
 
 /** A per-user conversation session stored in memory. */
 export interface ConversationSession {
@@ -44,6 +49,8 @@ export interface ConversationSession {
   lastActivity: Date;
   selectedModel: string;
   pdfContext?: PdfContext;
+  /** Uploaded files available for Gemini multimodal. */
+  files: FileContext[];
 }
 
 /** Configuration options for the session manager. */
@@ -140,6 +147,7 @@ export class SessionManager {
       createdAt: new Date(),
       lastActivity: new Date(),
       selectedModel: this.defaultModel,
+      files: [],
     };
     this.sessions.set(userId, session);
     return session;
@@ -201,6 +209,22 @@ export class SessionManager {
    */
   getPdfContext(userId: string): PdfContext | undefined {
     return this.sessions.get(userId)?.pdfContext;
+  }
+
+  /**
+   * Add an uploaded file to the user's session for Gemini multimodal.
+   */
+  addFile(userId: string, file: FileContext): void {
+    const session = this.getOrCreate(userId);
+    session.files.push(file);
+    session.lastActivity = new Date();
+  }
+
+  /**
+   * Return all uploaded files for a user's session.
+   */
+  getFiles(userId: string): FileContext[] {
+    return this.sessions.get(userId)?.files ?? [];
   }
 
   /**

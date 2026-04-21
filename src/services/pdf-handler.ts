@@ -26,6 +26,18 @@ const DEFAULT_UPLOAD_DIR = '/tmp/uploads';
 const FILE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const CLEANUP_INTERVAL_MS = 60 * 1000; // 1 minute
 
+/** MIME types supported by Gemini multimodal. */
+const SUPPORTED_MIME_TYPES = new Set([
+  'application/pdf',
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'text/plain',
+  'text/csv',
+  'text/html',
+]);
+
 // ────────────────────────────────────────────────────────────────
 // Public types
 // ────────────────────────────────────────────────────────────────
@@ -84,10 +96,10 @@ export function validatePDFFile(file: {
   mimetype: string;
   size: number;
 }): ValidationResult {
-  if (file.mimetype !== PDF_MIME_TYPE) {
+  if (!SUPPORTED_MIME_TYPES.has(file.mimetype)) {
     return {
       valid: false,
-      error: `Invalid file type: expected application/pdf, got ${file.mimetype}`,
+      error: `Unsupported file type: ${file.mimetype}`,
     };
   }
 
@@ -120,8 +132,10 @@ export function createMulterUpload(uploadDir: string = DEFAULT_UPLOAD_DIR) {
     destination: (_req, _file, cb) => {
       cb(null, uploadDir);
     },
-    filename: (_req, _file, cb) => {
-      cb(null, `${uuidv4()}.pdf`);
+    filename: (_req, file, cb) => {
+      // Preserve the original extension for MIME type detection
+      const ext = file.originalname.split('.').pop() || 'bin';
+      cb(null, `${uuidv4()}.${ext}`);
     },
   });
 
@@ -131,8 +145,8 @@ export function createMulterUpload(uploadDir: string = DEFAULT_UPLOAD_DIR) {
       fileSize: MAX_FILE_SIZE_BYTES,
     },
     fileFilter: (_req, file, cb) => {
-      if (file.mimetype !== PDF_MIME_TYPE) {
-        cb(new Error(`Invalid file type: expected application/pdf, got ${file.mimetype}`));
+      if (!SUPPORTED_MIME_TYPES.has(file.mimetype)) {
+        cb(new Error(`Unsupported file type: ${file.mimetype}. Supported: PDF, PNG, JPEG, GIF, WebP, TXT, CSV, HTML.`));
         return;
       }
       cb(null, true);
@@ -317,6 +331,13 @@ export class PDFHandler {
   }
 
   // ── Private helpers ─────────────────────────────────────────
+
+  /**
+   * Schedule a file for deletion after FILE_TTL_MS (public wrapper).
+   */
+  scheduleFileDeletionPublic(filePath: string): void {
+    this.scheduleFileDeletion(filePath);
+  }
 
   /**
    * Schedule a file for deletion after FILE_TTL_MS.

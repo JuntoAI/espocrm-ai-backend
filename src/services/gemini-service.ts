@@ -32,12 +32,21 @@ import { logger } from '../utils/logger.js';
 export type ToolCallCallback = (name: string, args: object) => Promise<unknown>;
 
 /** Parameters for the chat method. */
+/** A file to send to Gemini as inline data. */
+export interface FileAttachment {
+  mimeType: string;
+  data: string; // base64-encoded
+  filename: string;
+}
+
 export interface ChatParams {
   message: string;
   history: Content[];
   onToolCall: ToolCallCallback;
   model?: string;
   pdfContext?: string;
+  /** Files to include as inline data in the Gemini request. */
+  files?: FileAttachment[];
 }
 
 /** Record of a single tool execution during a chat turn. */
@@ -496,7 +505,7 @@ export class GeminiService {
    * 5. Return final text + sources + tools used
    */
   async chat(params: ChatParams): Promise<ChatResult> {
-    const { message, history, onToolCall, pdfContext } = params;
+    const { message, history, onToolCall, pdfContext, files } = params;
     const modelName = this.getModel(params.model);
     const model = this.models.get(modelName);
 
@@ -541,10 +550,32 @@ export class GeminiService {
     );
     const windowedHistory = assembleContext(history, maxMessages);
 
-    // Build the current user message
+    // Build the current user message with optional file attachments
+    const userParts: Part[] = [];
+
+    // Add file inline data parts first (Gemini processes them before text)
+    if (files && files.length > 0) {
+      for (const file of files) {
+        userParts.push({
+          inlineData: {
+            mimeType: file.mimeType,
+            data: file.data,
+          },
+        });
+      }
+      logger.info('GeminiService: files attached to request', {
+        count: files.length,
+        types: files.map((f) => f.mimeType),
+        names: files.map((f) => f.filename),
+      });
+    }
+
+    // Add the text message
+    userParts.push({ text: message });
+
     const userContent: Content = {
       role: 'user',
-      parts: [{ text: message }],
+      parts: userParts,
     };
 
     // Conversation contents = windowed history + current message
