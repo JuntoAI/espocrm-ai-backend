@@ -21,7 +21,6 @@ import type { SessionManager } from './session-manager.js';
 // ────────────────────────────────────────────────────────────────
 
 const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024; // 20 MB
-const PDF_MIME_TYPE = 'application/pdf';
 const DEFAULT_UPLOAD_DIR = '/tmp/uploads';
 const FILE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const CLEANUP_INTERVAL_MS = 60 * 1000; // 1 minute
@@ -218,11 +217,14 @@ export class PDFHandler {
       throw err;
     }
 
-    // Store extracted text in session's pdfContext
+    // Store extracted text in session's pdfContext (legacy)
     sessionManager.setPdfContext(userId, {
       filename: file.originalname,
       extractedText,
       uploadedAt: new Date(),
+      mimeType: file.mimetype,
+      filePath: file.path,
+      size: file.size,
     });
 
     // Schedule file deletion after 5 minutes

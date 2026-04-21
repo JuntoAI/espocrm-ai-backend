@@ -19,7 +19,7 @@ import express, {
   type Response,
   type NextFunction,
 } from 'express';
-import { createMulterUpload, type UploadedFile } from './services/pdf-handler.js';
+import { createMulterUpload } from './services/pdf-handler.js';
 import { PDFHandler } from './services/pdf-handler.js';
 import type { MCPBridge } from './services/mcp-bridge.js';
 import type { GeminiService, ChatResult } from './services/gemini-service.js';
@@ -243,10 +243,6 @@ export function createServer(deps: ServerDependencies): Express {
         }
 
         // 3. Store file reference in session (no text extraction — Gemini reads files natively)
-        const { readFile } = await import('fs/promises');
-        const fileBuffer = await readFile(file.path);
-        const base64Data = fileBuffer.toString('base64');
-
         sessionManager.addFile(user.userId, {
           filename: file.originalname,
           mimeType: file.mimetype,
