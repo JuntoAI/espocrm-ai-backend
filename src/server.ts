@@ -80,7 +80,7 @@ export function createServer(deps: ServerDependencies): Express {
   const app = express();
 
   // ── Global middleware ─────────────────────────────────────
-  app.use(express.json({ limit: '1mb' }));
+  app.use(express.json({ limit: '50mb' }));
 
   // ── Health endpoint (no auth) ─────────────────────────────
   app.get('/health', (_req: Request, res: Response) => {
