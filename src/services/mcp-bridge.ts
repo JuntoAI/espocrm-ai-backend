@@ -165,15 +165,17 @@ export class MCPBridge {
       throw new Error(`MCP tool error (${toolName}): ${errorText}`);
     }
 
-    // Extract text content from the MCP result
+    // Extract text content from the MCP result and wrap
+    // in a structured object. Gemini function calling expects
+    // tool results to be objects, not plain strings.
     if (Array.isArray(result.content)) {
       const textParts = result.content
         .filter((c: any) => c.type === 'text')
         .map((c: any) => c.text);
-      return textParts.join('\n');
+      return { result: textParts.join('\n') };
     }
 
-    return result.content;
+    return { result: result.content };
   }
 
   // ── Reconnection ────────────────────────────────────────────
