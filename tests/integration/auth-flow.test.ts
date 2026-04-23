@@ -12,7 +12,7 @@
  *  - Fake EspoCRM server (Express) for API key validation
  *  - Mock GeminiService (canned response)
  *  - Mock MCPBridge (reports connected)
- *  - Real SessionManager, RateLimiter, CRMExecutor, PDFHandler
+ *  - Real SessionManager, RateLimiter, PDFHandler
  *
  * Validates: Requirements 3.3, 6.2, 6.3, 6.4, 6.5
  */
@@ -33,7 +33,6 @@ import os from 'os';
 import { createServer, type ServerDependencies } from '../../src/server.js';
 import { SessionManager } from '../../src/services/session-manager.js';
 import { RateLimiter } from '../../src/services/rate-limiter.js';
-import { CRMExecutor } from '../../src/services/crm-executor.js';
 import { PDFHandler } from '../../src/services/pdf-handler.js';
 import type { MCPBridge } from '../../src/services/mcp-bridge.js';
 import type {
@@ -184,7 +183,6 @@ beforeAll(async () => {
     geminiService: createMockGeminiService(),
     sessionManager,
     rateLimiter,
-    crmExecutor: new CRMExecutor(espocrmUrl),
     pdfHandler: new PDFHandler(tmpDir),
     espocrmUrl,
     uploadDir: tmpDir,

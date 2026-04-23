@@ -25,7 +25,6 @@ import type { MCPBridge } from './services/mcp-bridge.js';
 import type { GeminiService, ChatResult } from './services/gemini-service.js';
 import type { SessionManager } from './services/session-manager.js';
 import type { RateLimiter } from './services/rate-limiter.js';
-import type { CRMExecutor } from './services/crm-executor.js';
 import { createAuthMiddleware } from './middleware/auth.js';
 import { validateChatRequest } from './utils/validators.js';
 import { getUserFriendlyMessage } from './utils/error-sanitizer.js';
@@ -45,7 +44,6 @@ export interface ServerDependencies {
   geminiService: GeminiService;
   sessionManager: SessionManager;
   rateLimiter: RateLimiter;
-  crmExecutor: CRMExecutor;
   pdfHandler: PDFHandler;
   espocrmUrl?: string;
   uploadDir?: string;
@@ -73,7 +71,6 @@ export function createServer(deps: ServerDependencies): Express {
     geminiService,
     sessionManager,
     rateLimiter,
-    crmExecutor,
     pdfHandler,
     espocrmUrl,
     uploadDir,
@@ -153,17 +150,16 @@ export function createServer(deps: ServerDependencies): Express {
           message,
           history,
           onToolCall: async (toolName: string, args: object) => {
-            // Route fetch_url to the web fetcher, everything else to CRM
+            // Route fetch_url to the web fetcher, everything else to MCP server
             if (toolName === 'fetch_url') {
               const url = (args as Record<string, unknown>).url as string;
               return await fetchUrl(url);
             }
-            const result = await crmExecutor.execute(
+            return await mcpBridge.callTool(
               toolName,
               args as Record<string, unknown>,
               user.apiKey,
             );
-            return result.data;
           },
           model: sessionManager.getModel(user.userId),
           pdfContext: pdfContext?.extractedText,
@@ -284,12 +280,11 @@ export function createServer(deps: ServerDependencies): Express {
                 const url = (args as Record<string, unknown>).url as string;
                 return await fetchUrl(url);
               }
-              const result = await crmExecutor.execute(
+              return await mcpBridge.callTool(
                 toolName,
                 args as Record<string, unknown>,
                 user.apiKey,
               );
-              return result.data;
             },
             model: sessionManager.getModel(user.userId),
             files: fileAttachments,

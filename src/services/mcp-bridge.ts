@@ -3,13 +3,12 @@
  *
  * Spawns the MCP server as a child process using the
  * `@modelcontextprotocol/sdk` client library over stdio transport.
- * Calls `tools/list` once at startup to fetch all 47 tool schemas,
- * then caches them in memory for Gemini function declaration
- * registration.
+ * Calls `tools/list` at startup to fetch all tool schemas, then
+ * routes tool calls through `tools/call` at runtime.
  *
- * The MCP server is used **only** for schema loading. Actual CRM
- * operations go through the CRM Executor's direct REST calls with
- * per-user API keys.
+ * All CRM logic (validation, PATCH vs PUT, field unwrapping, etc.)
+ * lives in the MCP server. The bridge is a thin pass-through that
+ * injects the per-user API key into each tool call.
  *
  * @module mcp-bridge
  */
@@ -115,6 +114,66 @@ export class MCPBridge {
   /** Return the cached tool schemas loaded at startup. */
   getToolSchemas(): ToolSchema[] {
     return this.toolSchemas;
+  }
+
+  // ── Tool execution ──────────────────────────────────────────
+
+  /**
+   * Execute a tool call via the MCP server.
+   *
+   * Injects the user's API key as `_apiKeyOverride` so the MCP
+   * server uses per-user permissions. The MCP server strips this
+   * field before passing args to the tool handler.
+   *
+   * @param toolName    MCP tool name (e.g. `create_contact`)
+   * @param args        Tool arguments from Gemini function call
+   * @param userApiKey  The requesting user's EspoCRM API key
+   * @returns           The text content from the MCP tool result
+   * @throws            Error if the bridge is disconnected or the
+   *                    MCP server returns an error
+   */
+  async callTool(
+    toolName: string,
+    args: Record<string, unknown>,
+    userApiKey: string,
+  ): Promise<unknown> {
+    if (!this.client || !this.connected) {
+      // Try to wait for reconnection if one is in progress
+      if (this.reconnecting) {
+        await this.waitForConnection();
+      } else {
+        throw new Error('MCP Bridge: not connected');
+      }
+    }
+
+    const result = await this.client!.callTool({
+      name: toolName,
+      arguments: {
+        ...args,
+        _apiKeyOverride: userApiKey,
+      },
+    });
+
+    // Check for MCP-level errors
+    if (result.isError) {
+      const errorText = Array.isArray(result.content)
+        ? result.content
+            .filter((c: any) => c.type === 'text')
+            .map((c: any) => c.text)
+            .join('\n')
+        : String(result.content);
+      throw new Error(`MCP tool error (${toolName}): ${errorText}`);
+    }
+
+    // Extract text content from the MCP result
+    if (Array.isArray(result.content)) {
+      const textParts = result.content
+        .filter((c: any) => c.type === 'text')
+        .map((c: any) => c.text);
+      return textParts.join('\n');
+    }
+
+    return result.content;
   }
 
   // ── Reconnection ────────────────────────────────────────────
@@ -233,11 +292,8 @@ export class MCPBridge {
       stderr: 'pipe',
       env: {
         ...process.env,
-        // Run MCP server in schema-only mode — it only needs to respond
-        // to tools/list, not make actual CRM API calls.
-        SCHEMA_ONLY: 'true',
         ESPOCRM_URL: process.env.ESPOCRM_URL ?? 'http://localhost:8080',
-        ESPOCRM_API_KEY: process.env.ESPOCRM_API_KEY ?? 'schema-only',
+        ESPOCRM_API_KEY: process.env.ESPOCRM_API_KEY ?? '',
         // Suppress all logging — the stdio transport expects only JSON-RPC
         // on stdout. Any console.log or Winston output breaks the protocol.
         LOG_LEVEL: 'error',

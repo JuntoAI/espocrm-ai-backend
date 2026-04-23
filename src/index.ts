@@ -13,7 +13,6 @@ import { MCPBridge } from './services/mcp-bridge.js';
 import { GeminiService } from './services/gemini-service.js';
 import { SessionManager } from './services/session-manager.js';
 import { RateLimiter } from './services/rate-limiter.js';
-import { CRMExecutor } from './services/crm-executor.js';
 import { PDFHandler } from './services/pdf-handler.js';
 import { convertAllSchemas } from './utils/schema-converter.js';
 import { HARDCODED_TOOL_SCHEMAS } from './utils/tool-schemas.js';
@@ -39,7 +38,6 @@ async function main(): Promise<void> {
   // 1. Initialize services
   const sessionManager = new SessionManager();
   const rateLimiter = new RateLimiter();
-  const crmExecutor = new CRMExecutor();
   const pdfHandler = new PDFHandler(UPLOAD_DIR);
 
   // 2. Ensure upload directory exists
@@ -87,7 +85,6 @@ async function main(): Promise<void> {
       geminiService,
       sessionManager,
       rateLimiter,
-      crmExecutor,
       pdfHandler,
       uploadDir: UPLOAD_DIR,
     });
