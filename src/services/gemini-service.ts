@@ -634,6 +634,16 @@ export class GeminiService {
         const finalMessage =
           textParts.join('') || 'I was unable to generate a response.';
 
+        if (!textParts.length) {
+          logger.warn('GeminiService: no text in final response', {
+            round,
+            partsCount: parts.length,
+            partTypes: parts.map((p) => Object.keys(p).filter(k => k !== '_meta')),
+            hasCandidate: !!candidate,
+            finishReason: candidate?.finishReason,
+          });
+        }
+
         return { message: finalMessage, toolsUsed, sources };
       }
 
@@ -681,6 +691,13 @@ export class GeminiService {
         parts: functionResponseParts,
       };
       contents.push(toolResponseContent);
+
+      logger.info('GeminiService: sending function responses back to Gemini', {
+        round,
+        responseCount: functionResponseParts.length,
+        responseNames: execResult.functionResponses.map((fr) => fr.name),
+        responseSizes: execResult.functionResponses.map((fr) => JSON.stringify(fr.response).length),
+      });
 
       // Loop continues — Gemini will process the tool results
     }
