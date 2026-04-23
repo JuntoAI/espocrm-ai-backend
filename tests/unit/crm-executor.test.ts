@@ -422,3 +422,72 @@ describe('CRMExecutor', () => {
     });
   });
 });
+
+// ────────────────────────────────────────────────────────────────
+// unwrapNestedArgs
+// ────────────────────────────────────────────────────────────────
+
+describe('CRMExecutor.unwrapNestedArgs', () => {
+  it('unwraps data for update_entity', () => {
+    const result = CRMExecutor.unwrapNestedArgs('update_entity', {
+      data: { billingAddressCity: 'Ljubljana', billingAddressCountry: 'Slovenia' },
+    });
+    expect(result).toEqual({
+      billingAddressCity: 'Ljubljana',
+      billingAddressCountry: 'Slovenia',
+    });
+  });
+
+  it('unwraps data for create_entity', () => {
+    const result = CRMExecutor.unwrapNestedArgs('create_entity', {
+      data: { name: 'Test Account', type: 'Customer' },
+    });
+    expect(result).toEqual({ name: 'Test Account', type: 'Customer' });
+  });
+
+  it('preserves sibling keys when unwrapping data', () => {
+    const result = CRMExecutor.unwrapNestedArgs('update_entity', {
+      data: { name: 'Updated' },
+      select: ['id', 'name'],
+    });
+    expect(result).toEqual({ name: 'Updated', select: ['id', 'name'] });
+  });
+
+  it('unwraps filters for search_entity', () => {
+    const result = CRMExecutor.unwrapNestedArgs('search_entity', {
+      filters: { status: 'Active', industry: 'Technology' },
+      limit: 10,
+    });
+    expect(result).toEqual({ status: 'Active', industry: 'Technology', limit: 10 });
+  });
+
+  it('returns args unchanged for non-generic tools', () => {
+    const args = { firstName: 'John', lastName: 'Doe' };
+    const result = CRMExecutor.unwrapNestedArgs('create_contact', args);
+    expect(result).toEqual(args);
+  });
+
+  it('returns args unchanged when data is not an object', () => {
+    const args = { data: 'not-an-object' };
+    const result = CRMExecutor.unwrapNestedArgs('update_entity', args);
+    expect(result).toEqual({ data: 'not-an-object' });
+  });
+
+  it('returns args unchanged when data is null', () => {
+    const args = { data: null };
+    const result = CRMExecutor.unwrapNestedArgs('update_entity', args);
+    expect(result).toEqual({ data: null });
+  });
+
+  it('returns args unchanged when data is an array', () => {
+    const args = { data: [1, 2, 3] };
+    const result = CRMExecutor.unwrapNestedArgs('update_entity', args);
+    expect(result).toEqual({ data: [1, 2, 3] });
+  });
+
+  it('returns args unchanged when filters is missing for search_entity', () => {
+    const args = { limit: 20, offset: 0 };
+    const result = CRMExecutor.unwrapNestedArgs('search_entity', args);
+    expect(result).toEqual({ limit: 20, offset: 0 });
+  });
+});

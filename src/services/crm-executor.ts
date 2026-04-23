@@ -215,7 +215,13 @@ export class CRMExecutor {
     const method = config.method.toUpperCase() as Method;
 
     // Separate path params from the rest
-    const remainingArgs = this.extractRemainingArgs(args, config.path);
+    let remainingArgs = this.extractRemainingArgs(args, config.path);
+
+    // Unwrap nested wrapper fields used by generic entity tools.
+    // The MCP tool schemas define `data` (create/update_entity) and
+    // `filters` (search_entity) as wrapper objects. The CRM REST API
+    // expects the contents at the top level, not nested inside a key.
+    remainingArgs = CRMExecutor.unwrapNestedArgs(toolName, remainingArgs);
 
     try {
       let response;
@@ -297,6 +303,51 @@ export class CRMExecutor {
   /** Clear the client cache (for testing / shutdown). */
   clearCache(): void {
     this.clientCache.clear();
+  }
+
+  // ── Nested arg unwrapping ───────────────────────────────────
+
+  /**
+   * Unwrap nested wrapper fields used by generic entity tools.
+   *
+   * The MCP tool schemas define:
+   *  - `data` on create_entity / update_entity — an object whose
+   *    keys are the actual entity fields to write.
+   *  - `filters` on search_entity — an object whose keys are the
+   *    actual filter attributes.
+   *
+   * The EspoCRM REST API expects these fields at the top level,
+   * not nested inside a wrapper key. This method spreads the
+   * wrapper contents into the remaining args, preserving any
+   * sibling keys (like `select`, `limit`, etc.).
+   *
+   * Exported as a static method for testability.
+   */
+  static unwrapNestedArgs(
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    if (
+      (toolName === 'create_entity' || toolName === 'update_entity') &&
+      typeof args.data === 'object' &&
+      args.data !== null &&
+      !Array.isArray(args.data)
+    ) {
+      const { data, ...rest } = args;
+      return { ...rest, ...(data as Record<string, unknown>) };
+    }
+
+    if (
+      toolName === 'search_entity' &&
+      typeof args.filters === 'object' &&
+      args.filters !== null &&
+      !Array.isArray(args.filters)
+    ) {
+      const { filters, ...rest } = args;
+      return { ...rest, ...(filters as Record<string, unknown>) };
+    }
+
+    return args;
   }
 
   // ── Path substitution ───────────────────────────────────────
