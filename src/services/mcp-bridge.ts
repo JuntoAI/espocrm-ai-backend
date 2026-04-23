@@ -292,8 +292,12 @@ export class MCPBridge {
       stderr: 'pipe',
       env: {
         ...process.env,
+        // Schema-only mode skips the connection test at startup (no API key
+        // needed). Actual tool calls use per-user API keys injected via
+        // _apiKeyOverride, so the default client is never used at runtime.
+        SCHEMA_ONLY: 'true',
         ESPOCRM_URL: process.env.ESPOCRM_URL ?? 'http://localhost:8080',
-        ESPOCRM_API_KEY: process.env.ESPOCRM_API_KEY ?? '',
+        ESPOCRM_API_KEY: process.env.ESPOCRM_API_KEY ?? 'schema-only',
         // Suppress all logging — the stdio transport expects only JSON-RPC
         // on stdout. Any console.log or Winston output breaks the protocol.
         LOG_LEVEL: 'error',
