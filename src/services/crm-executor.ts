@@ -62,22 +62,22 @@ export const TOOL_REST_MAP: Record<string, ToolRestConfig> = {
   // ── Leads (5) ─────────────────────────────────────────────
   create_lead:          { method: 'POST',   path: '/api/v1/Lead' },
   search_leads:         { method: 'GET',    path: '/api/v1/Lead' },
-  update_lead:          { method: 'PUT',    path: '/api/v1/Lead/{leadId}' },
+  update_lead:          { method: 'PATCH',  path: '/api/v1/Lead/{leadId}' },
   convert_lead:         { method: 'POST',   path: '/api/v1/LeadCapture/convert/{leadId}' },
-  assign_lead:          { method: 'PUT',    path: '/api/v1/Lead/{leadId}' },
+  assign_lead:          { method: 'PATCH',  path: '/api/v1/Lead/{leadId}' },
 
   // ── Meetings (4) ──────────────────────────────────────────
   create_meeting:       { method: 'POST',   path: '/api/v1/Meeting' },
   search_meetings:      { method: 'GET',    path: '/api/v1/Meeting' },
   get_meeting:          { method: 'GET',    path: '/api/v1/Meeting/{meetingId}' },
-  update_meeting:       { method: 'PUT',    path: '/api/v1/Meeting/{meetingId}' },
+  update_meeting:       { method: 'PATCH',  path: '/api/v1/Meeting/{meetingId}' },
 
   // ── Tasks (5) ─────────────────────────────────────────────
   create_task:          { method: 'POST',   path: '/api/v1/Task' },
   search_tasks:         { method: 'GET',    path: '/api/v1/Task' },
   get_task:             { method: 'GET',    path: '/api/v1/Task/{taskId}' },
-  update_task:          { method: 'PUT',    path: '/api/v1/Task/{taskId}' },
-  assign_task:          { method: 'PUT',    path: '/api/v1/Task/{taskId}' },
+  update_task:          { method: 'PATCH',  path: '/api/v1/Task/{taskId}' },
+  assign_task:          { method: 'PATCH',  path: '/api/v1/Task/{taskId}' },
 
   // ── Calls (2) ─────────────────────────────────────────────
   create_call:          { method: 'POST',   path: '/api/v1/Call' },
@@ -86,7 +86,7 @@ export const TOOL_REST_MAP: Record<string, ToolRestConfig> = {
   // ── Cases (3) ─────────────────────────────────────────────
   create_case:          { method: 'POST',   path: '/api/v1/Case' },
   search_cases:         { method: 'GET',    path: '/api/v1/Case' },
-  update_case:          { method: 'PUT',    path: '/api/v1/Case/{caseId}' },
+  update_case:          { method: 'PATCH',  path: '/api/v1/Case/{caseId}' },
 
   // ── Notes (2) ─────────────────────────────────────────────
   add_note:             { method: 'POST',   path: '/api/v1/Note' },
@@ -111,7 +111,7 @@ export const TOOL_REST_MAP: Record<string, ToolRestConfig> = {
   create_entity:        { method: 'POST',   path: '/api/v1/{entityType}' },
   search_entity:        { method: 'GET',    path: '/api/v1/{entityType}' },
   get_entity:           { method: 'GET',    path: '/api/v1/{entityType}/{entityId}' },
-  update_entity:        { method: 'PUT',    path: '/api/v1/{entityType}/{entityId}' },
+  update_entity:        { method: 'PATCH',  path: '/api/v1/{entityType}/{entityId}' },
   delete_entity:        { method: 'DELETE',  path: '/api/v1/{entityType}/{entityId}' },
 
   // ── Relationships (3) ─────────────────────────────────────
@@ -229,7 +229,7 @@ export class CRMExecutor {
           params,
         });
       } else {
-        // POST/PUT: separate query params from body
+        // POST/PUT/PATCH: separate query params from body
         const queryParams: Record<string, unknown> = {};
         const bodyArgs: Record<string, unknown> = {};
 

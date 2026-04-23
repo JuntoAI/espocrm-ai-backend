@@ -98,13 +98,17 @@ describe('TOOL_REST_MAP', () => {
     }
   });
 
-  it('update_ tools use PUT method', () => {
-    const updateTools = Object.entries(TOOL_REST_MAP).filter(
-      ([name]) => name.startsWith('update_'),
+  it('update_ and assign_ tools use PATCH method (except assign_role_to_user which is POST)', () => {
+    const patchTools = Object.entries(TOOL_REST_MAP).filter(
+      ([name]) =>
+        (name.startsWith('update_') || name.startsWith('assign_')) &&
+        name !== 'assign_role_to_user',
     );
-    for (const [name, config] of updateTools) {
-      expect(config.method).toBe('PUT');
+    for (const [name, config] of patchTools) {
+      expect(config.method).toBe('PATCH');
     }
+    // assign_role_to_user is a POST (creates a role link, not a partial update)
+    expect(TOOL_REST_MAP['assign_role_to_user'].method).toBe('POST');
   });
 
   it('delete_entity uses DELETE method', () => {
