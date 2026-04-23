@@ -513,23 +513,15 @@ export class GeminiService {
       throw new Error(`Model "${modelName}" is not initialized.`);
     }
 
-    // Build tools array: filtered function declarations + search grounding
+    // Build tools array: all function declarations + search grounding
     const tools: Tool[] = [];
     if (this.toolDeclarations.length > 0) {
-      const relevantToolNames = selectToolsForMessage(message);
-      const filteredDeclarations = this.toolDeclarations.filter(
-        (td) => relevantToolNames.has(td.name),
-      );
-      if (filteredDeclarations.length > 0) {
-        const fnTool: FunctionDeclarationsTool = {
-          functionDeclarations: filteredDeclarations,
-        };
-        tools.push(fnTool);
-      }
-      logger.info('GeminiService: tools selected for request', {
+      const fnTool: FunctionDeclarationsTool = {
+        functionDeclarations: this.toolDeclarations,
+      };
+      tools.push(fnTool);
+      logger.info('GeminiService: all tools included in request', {
         total: this.toolDeclarations.length,
-        selected: filteredDeclarations.length,
-        tools: filteredDeclarations.map((t) => t.name),
       });
     }
     const searchTool = {
