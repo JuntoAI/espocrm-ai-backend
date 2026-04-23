@@ -76,7 +76,7 @@ export interface ChatResult {
 const DEFAULT_MODEL = 'gemini-3.1-flash-lite-preview';
 const TEMPERATURE = 0.3;
 const MAX_OUTPUT_TOKENS = 2048;
-const API_TIMEOUT_MS = 60_000;
+const API_TIMEOUT_MS = 120_000;
 const RETRY_BACKOFF_MS = 2_000;
 const MAX_FUNCTION_CALL_ROUNDS = 10;
 
@@ -752,7 +752,7 @@ export class GeminiService {
       model.generateContent(request),
       rejectAfter(
         API_TIMEOUT_MS,
-        'Gemini API call timed out after 60 seconds',
+        'Gemini API call timed out after 120 seconds',
       ),
     ]);
   }
