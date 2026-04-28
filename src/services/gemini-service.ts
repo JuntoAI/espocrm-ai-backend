@@ -78,7 +78,7 @@ const TEMPERATURE = 0.3;
 const MAX_OUTPUT_TOKENS = 2048;
 const API_TIMEOUT_MS = 120_000;
 const RETRY_BACKOFF_MS = 2_000;
-const MAX_FUNCTION_CALL_ROUNDS = 10;
+const MAX_FUNCTION_CALL_ROUNDS = 20;
 
 // ────────────────────────────────────────────────────────────────
 // System prompt
@@ -107,6 +107,44 @@ You have access to tools for managing:
 - **Contacts** belong to Accounts and have titles, departments, email addresses, and phone numbers
 - **Opportunities** are linked to Accounts with stages: Prospecting → Qualification → Needs Analysis → Value Proposition → Id. Decision Makers → Perception Analysis → Proposal/Price Quote → Closed Won / Closed Lost
 - **Leads** can be converted to Contacts + Accounts + Opportunities
+
+## CRITICAL: Field Value Constraints
+When creating or updating records, you MUST use ONLY these exact values for enum fields. Using any other value will cause a validation error.
+
+### Account fields
+- **type**: Customer, Investor, Partner, Reseller (ONLY these 4 values)
+- **industry**: Use ONLY standard values: Apparel, Banking, Biotechnology, Chemicals, Communications, Construction, Consulting, Education, Electronics, Energy, Engineering, Entertainment, Environmental, Finance, Food & Beverage, Government, Healthcare, Hospitality, Insurance, Legal, Machinery, Manufacturing, Media, Not For Profit, Recreation, Retail, Shipping, Technology, Telecommunications, Transportation, Utilities, Venture Capital (do NOT invent values like "Venture Capital / Private Equity")
+- **cStatus**: Backlog, Waiting for Intro, Meeting Requested, In Discussion, Interested, Closed, Declined, Unresponsive, For 2nd round
+- **cRating**: 0 (unrated), 1, 2, 3, 4, or 5
+
+### Contact fields
+- Use **cRole** for job title (NOT the "title" field — it does not persist)
+- **cLinkedIn**: LinkedIn profile URL
+
+### Lead fields
+- **status**: New, Assigned, In Process, Converted, Recycled, Dead
+- **source**: Call, Email, Existing Customer, Partner, Public Relations, Web Site, Campaign, Other
+
+### Opportunity fields
+- **stage**: Prospecting, Qualification, Needs Analysis, Value Proposition, Id. Decision Makers, Perception Analysis, Proposal/Price Quote, Closed Won, Closed Lost
+
+### Task fields
+- **status**: Not Started, Started, Completed, Canceled, Deferred
+- **priority**: Low, Normal, High, Urgent
+
+### Case fields
+- **status**: New, Assigned, Pending, Closed, Rejected, Duplicate
+- **priority**: Low, Normal, High, Urgent
+- **type**: Question, Incident, Problem, Feature Request
+
+### Meeting fields
+- **status**: Planned, Held, Not Held
+- **dateStart/dateEnd format**: YYYY-MM-DD HH:mm:ss (space-separated, NOT ISO format with T)
+
+### General rules
+- Always search before creating to avoid duplicates
+- When updating entities, use update_entity with entityType, entityId, and a data object containing ONLY the fields to change
+- For contacts, always try to link them to an existing account using accountId
 
 ## Safety Instructions
 - Always confirm before executing delete or bulk update operations
@@ -594,7 +632,44 @@ export class GeminiService {
       };
 
       // Send to Gemini with timeout + retry
-      const result = await this.callWithRetry(model, request);
+      let result: GenerateContentResult;
+      try {
+        result = await this.callWithRetry(model, request);
+      } catch (err) {
+        // Handle thought_signature errors gracefully — Gemini 3.x models
+        // require thought signatures to be echoed back perfectly. If the
+        // conversation history gets corrupted, we recover by trimming the
+        // problematic history and returning what we have so far.
+        const errMsg = err instanceof Error ? err.message : String(err);
+        if (errMsg.includes('thought_signature')) {
+          logger.warn('GeminiService: thought_signature error, recovering gracefully', {
+            round,
+            error: errMsg,
+            toolsUsedSoFar: toolsUsed.length,
+          });
+
+          // If we already executed some tools, return partial results
+          if (toolsUsed.length > 0) {
+            const toolSummary = toolsUsed
+              .map((t) => `- ${t.tool}: ${t.success ? '✓' : '✗'} ${t.summary}`)
+              .join('\n');
+            return {
+              message: `I encountered a technical issue mid-conversation but completed some operations:\n\n${toolSummary}\n\nPlease try your request again if more actions are needed.`,
+              toolsUsed,
+              sources,
+            };
+          }
+
+          // No tools executed yet — return a clean error message
+          return {
+            message: 'I encountered a technical issue processing this request. Please try again — starting a new message usually resolves this.',
+            toolsUsed: [],
+            sources: [],
+          };
+        }
+        // Re-throw non-thought_signature errors
+        throw err;
+      }
       const response = result.response;
 
       // Extract grounding sources from the response
@@ -664,6 +739,7 @@ export class GeminiService {
         logger.info('GeminiService: tool executed', {
           tool: te.tool,
           success: te.success,
+          ...(te.success ? {} : { error: te.summary }),
         });
       }
 
