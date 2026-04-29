@@ -159,6 +159,7 @@ export function createServer(deps: ServerDependencies): Express {
               toolName,
               args as Record<string, unknown>,
               user.apiKey,
+              user.userId,
             );
           },
           model: sessionManager.getModel(user.userId),
@@ -284,6 +285,7 @@ export function createServer(deps: ServerDependencies): Express {
                 toolName,
                 args as Record<string, unknown>,
                 user.apiKey,
+                user.userId,
               );
             },
             model: sessionManager.getModel(user.userId),

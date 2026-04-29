@@ -136,6 +136,7 @@ export class MCPBridge {
     toolName: string,
     args: Record<string, unknown>,
     userApiKey: string,
+    userId?: string,
   ): Promise<unknown> {
     if (!this.client || !this.connected) {
       // Try to wait for reconnection if one is in progress
@@ -151,6 +152,7 @@ export class MCPBridge {
       arguments: {
         ...args,
         _apiKeyOverride: userApiKey,
+        ...(userId ? { _userIdOverride: userId } : {}),
       },
     });
 
