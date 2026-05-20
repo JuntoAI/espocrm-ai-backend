@@ -16,7 +16,7 @@ export interface HardcodedToolSchema {
   description: string;
   inputSchema: {
     type: 'object';
-    properties: Record<string, { type: string; description?: string; enum?: string[] }>;
+    properties: Record<string, { type: string; description?: string; enum?: string[]; items?: { type: string } }>;
     required: string[];
   };
 }
@@ -643,6 +643,22 @@ export const HARDCODED_TOOL_SCHEMAS: HardcodedToolSchema[] = [
         url: { type: 'string', description: 'The full URL to fetch (must start with https:// or http://)' },
       },
       required: ['url'],
+    },
+  },
+
+  // ── Email Drafting ────────────────────────────────────
+  {
+    name: 'draft_email',
+    description: 'Generate an email draft for a CRM contact. Returns subject and body for user review — does NOT send the email.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        contactId: { type: 'string', description: 'EspoCRM Contact ID' },
+        purpose: { type: 'string', description: 'Purpose/context for the email (max 500 chars)' },
+        tone: { type: 'string', description: 'Tone of the email', enum: ['formal', 'casual'] },
+        keyPoints: { type: 'array', items: { type: 'string' }, description: 'Key points to include (1-10 items)' },
+      },
+      required: ['contactId', 'purpose', 'tone', 'keyPoints'],
     },
   },
 ];

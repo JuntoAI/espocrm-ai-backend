@@ -386,6 +386,10 @@ const TOOL_CATEGORIES: Record<string, { keywords: RegExp; tools: string[] }> = {
     keywords: /\b(website|webpage|url|http|https|fetch|browse|visit|check.*site|look.*at|analyze.*page|investor.*site|portfolio.*page|linkedin|crunchbase|enrich|research)\b/i,
     tools: ['fetch_url'],
   },
+  email: {
+    keywords: /\b(email|draft|compose|write.*email|send.*email|message.*to|reach.*out)\b/i,
+    tools: ['draft_email'],
+  },
 };
 
 /**

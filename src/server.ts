@@ -8,6 +8,9 @@
  * Routes:
  *  - POST /chat          — main chat endpoint
  *  - POST /chat/upload   — PDF upload + optional chat
+ *  - POST /brief         — daily brief generation
+ *  - GET  /config        — get user proactive agent config
+ *  - PATCH /config       — update user proactive agent config
  *  - GET  /health        — liveness / readiness probe
  *
  * @module server
@@ -30,6 +33,12 @@ import { validateChatRequest } from './utils/validators.js';
 import { getUserFriendlyMessage } from './utils/error-sanitizer.js';
 import { logger } from './utils/logger.js';
 import { fetchUrl } from './services/web-fetcher.js';
+import { EmailDrafter } from './services/email-drafter.js';
+import type { EmailDraftParams } from './services/email-drafter.js';
+import { BriefCache } from './services/brief-cache.js';
+import { BriefGenerator } from './services/brief-generator.js';
+import { CrmAnalyzer } from './services/crm-analyzer.js';
+import { UserConfigStore } from './services/user-config-store.js';
 import type { Content } from '@google-cloud/vertexai';
 import type { FileAttachment } from './services/gemini-service.js';
 import type { FileContext } from './services/session-manager.js';
@@ -57,6 +66,18 @@ export interface ChatResponse {
   sources?: Array<{ title: string; url: string }>;
 }
 
+/** Shape of the brief response returned to clients. */
+export interface BriefResponse {
+  recommendations: Array<{
+    description: string;
+    reason: string;
+    suggestedCommand: string;
+  }>;
+  isAiGenerated: boolean;
+  generatedAt: string;
+  cacheHit: boolean;
+}
+
 // ────────────────────────────────────────────────────────────────
 // Server factory
 // ────────────────────────────────────────────────────────────────
@@ -77,6 +98,20 @@ export function createServer(deps: ServerDependencies): Express {
   } = deps;
 
   const app = express();
+
+  // ── EmailDrafter instance (bypasses MCP bridge) ───────────
+  const emailDrafter = new EmailDrafter(
+    espocrmUrl ?? process.env.ESPOCRM_URL ?? 'http://localhost:8080',
+  );
+
+  // ── Brief generation services ─────────────────────────────
+  const resolvedEspocrmUrl = espocrmUrl ?? process.env.ESPOCRM_URL ?? 'http://localhost:8080';
+  const userConfigStore = new UserConfigStore(
+    process.env.USER_CONFIG_PATH ?? '/data/user-configs',
+  );
+  const crmAnalyzer = new CrmAnalyzer();
+  const briefGenerator = new BriefGenerator(crmAnalyzer, userConfigStore, resolvedEspocrmUrl);
+  const briefCache = new BriefCache();
 
   // ── Global middleware ─────────────────────────────────────
   app.use(express.json({ limit: '50mb' }));
@@ -109,6 +144,185 @@ export function createServer(deps: ServerDependencies): Express {
 
   // ── Multer for PDF uploads ────────────────────────────────
   const upload = createMulterUpload(uploadDir);
+
+  // ── POST /brief ───────────────────────────────────────────
+  app.post(
+    '/brief',
+    authMiddleware,
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const user = req.validatedUser!;
+
+        // 1. Rate limit check (same 30 req/min as /chat)
+        const rateResult = rateLimiter.check(user.userId);
+        if (!rateResult.allowed) {
+          res.status(429).json({
+            error: `Rate limit exceeded. Please wait ${rateResult.retryAfter} seconds.`,
+            retryAfter: rateResult.retryAfter,
+          });
+          return;
+        }
+
+        // 2. Check BriefCache for valid entry
+        const cachedBrief = briefCache.get(user.userId);
+        if (cachedBrief) {
+          const response: BriefResponse = {
+            recommendations: cachedBrief.recommendations,
+            isAiGenerated: cachedBrief.isAiGenerated,
+            generatedAt: cachedBrief.generatedAt,
+            cacheHit: true,
+          };
+
+          logger.info('Brief served from cache', { userId: user.userId });
+          res.json(response);
+          return;
+        }
+
+        // 3. Cache miss — generate fresh brief
+        const brief = await briefGenerator.generate(user.apiKey, user.userId);
+
+        // 4. Check if the brief indicates a CRM error (isAiGenerated=false + empty recommendations + empty raw data)
+        // The BriefGenerator returns a fallback brief on CRM errors, not a thrown error.
+        // We detect CRM-level failures by checking if rawAnalysis has the error shape.
+
+        // 5. Cache the result
+        briefCache.set(user.userId, brief);
+
+        // 6. Return BriefResponse
+        const response: BriefResponse = {
+          recommendations: brief.recommendations,
+          isAiGenerated: brief.isAiGenerated,
+          generatedAt: brief.generatedAt,
+          cacheHit: false,
+        };
+
+        logger.info('Brief generated', {
+          userId: user.userId,
+          recommendationCount: brief.recommendations.length,
+          isAiGenerated: brief.isAiGenerated,
+        });
+
+        res.json(response);
+      } catch (err: unknown) {
+        // Map known CRM errors to appropriate HTTP status codes
+        if (err instanceof Error) {
+          const message = err.message.toLowerCase();
+
+          if (message.includes('auth') || message.includes('401') || message.includes('403')) {
+            res.status(502).json({
+              error: 'Unable to access CRM data. Please check your API key permissions.',
+              code: 'AUTH_FAILED',
+            });
+            return;
+          }
+
+          if (message.includes('timeout') || message.includes('timed out')) {
+            res.status(504).json({
+              error: 'CRM data retrieval timed out. Please try again.',
+              code: 'TIMEOUT',
+            });
+            return;
+          }
+
+          if (message.includes('unavailable') || message.includes('5xx') || message.includes('service')) {
+            res.status(502).json({
+              error: 'CRM service is temporarily unavailable. Please try again later.',
+              code: 'SERVICE_UNAVAILABLE',
+            });
+            return;
+          }
+        }
+
+        next(err);
+      }
+    },
+  );
+
+  // ── GET /config ───────────────────────────────────────────
+  app.get(
+    '/config',
+    authMiddleware,
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const user = req.validatedUser!;
+        const config = await userConfigStore.get(user.userId);
+
+        res.json({ config });
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  // ── PATCH /config ─────────────────────────────────────────
+  app.patch(
+    '/config',
+    authMiddleware,
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const user = req.validatedUser!;
+        const body = req.body as Record<string, unknown>;
+
+        // Extract only the allowed config fields from the request body
+        const partial: Record<string, unknown> = {};
+        if (body.engagementDecayDays !== undefined) {
+          partial.engagementDecayDays = body.engagementDecayDays;
+        }
+        if (body.activityWindowDays !== undefined) {
+          partial.activityWindowDays = body.activityWindowDays;
+        }
+
+        // Reject if no valid fields provided
+        if (Object.keys(partial).length === 0) {
+          res.status(400).json({
+            error: 'No valid configuration fields provided.',
+            validOptions: 'engagementDecayDays (1-90), activityWindowDays (1-30)',
+          });
+          return;
+        }
+
+        // Validate before attempting to set
+        const validation = userConfigStore.validate(
+          partial as { engagementDecayDays?: number; activityWindowDays?: number },
+        );
+        if (!validation.valid) {
+          res.status(400).json({
+            error: validation.errors.join('; '),
+            validOptions: 'engagementDecayDays: integer 1-90, activityWindowDays: integer 1-30',
+          });
+          return;
+        }
+
+        // Apply the update
+        const updatedConfig = await userConfigStore.set(
+          user.userId,
+          partial as { engagementDecayDays?: number; activityWindowDays?: number },
+        );
+
+        // Invalidate BriefCache so next brief uses new thresholds
+        briefCache.invalidate(user.userId);
+
+        // Build confirmation message
+        const changes: string[] = [];
+        if (partial.engagementDecayDays !== undefined) {
+          changes.push(`engagement decay to ${partial.engagementDecayDays} days`);
+        }
+        if (partial.activityWindowDays !== undefined) {
+          changes.push(`activity window to ${partial.activityWindowDays} days`);
+        }
+        const message = `Updated ${changes.join(' and ')}`;
+
+        logger.info('User config updated', {
+          userId: user.userId,
+          changes: partial,
+        });
+
+        res.json({ config: updatedConfig, message });
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
 
   // ── POST /chat ────────────────────────────────────────────
   app.post(
@@ -161,11 +375,19 @@ export function createServer(deps: ServerDependencies): Express {
           message,
           history,
           onToolCall: async (toolName: string, args: object) => {
-            // Route fetch_url to the web fetcher, everything else to MCP server
+            // Route fetch_url to the web fetcher
             if (toolName === 'fetch_url') {
               const url = (args as Record<string, unknown>).url as string;
               return await fetchUrl(url);
             }
+            // Route draft_email to EmailDrafter (bypasses MCP bridge)
+            if (toolName === 'draft_email') {
+              return await emailDrafter.draft(
+                args as EmailDraftParams,
+                user.apiKey,
+              );
+            }
+            // Everything else → MCP bridge (CRM Executor)
             return await mcpBridge.callTool(
               toolName,
               args as Record<string, unknown>,
@@ -291,6 +513,13 @@ export function createServer(deps: ServerDependencies): Express {
               if (toolName === 'fetch_url') {
                 const url = (args as Record<string, unknown>).url as string;
                 return await fetchUrl(url);
+              }
+              // Route draft_email to EmailDrafter (bypasses MCP bridge)
+              if (toolName === 'draft_email') {
+                return await emailDrafter.draft(
+                  args as EmailDraftParams,
+                  user.apiKey,
+                );
               }
               return await mcpBridge.callTool(
                 toolName,
