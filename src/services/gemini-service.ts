@@ -75,10 +75,10 @@ export interface ChatResult {
 
 const DEFAULT_MODEL = 'gemini-3.5-flash';
 const TEMPERATURE = 0.3;
-const MAX_OUTPUT_TOKENS = 2048;
+const MAX_OUTPUT_TOKENS = 4096;
 const API_TIMEOUT_MS = 120_000;
 const RETRY_BACKOFF_MS = 2_000;
-const MAX_FUNCTION_CALL_ROUNDS = 20;
+const MAX_FUNCTION_CALL_ROUNDS = 40;
 
 // ────────────────────────────────────────────────────────────────
 // System prompt
