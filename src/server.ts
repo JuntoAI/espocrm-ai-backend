@@ -93,6 +93,17 @@ export function createServer(deps: ServerDependencies): Express {
     });
   });
 
+  // ── Models endpoint (no auth — lightweight config) ──────
+  app.get('/models', (_req: Request, res: Response) => {
+    const models = geminiService.getAvailableModels();
+    const defaultModel = geminiService.getModel();
+
+    res.json({
+      models,
+      defaultModel,
+    });
+  });
+
   // ── Auth middleware factory ───────────────────────────────
   const authMiddleware = createAuthMiddleware(espocrmUrl);
 

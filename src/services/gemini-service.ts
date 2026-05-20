@@ -73,7 +73,7 @@ export interface ChatResult {
 // Constants
 // ────────────────────────────────────────────────────────────────
 
-const DEFAULT_MODEL = 'gemini-3.1-flash-lite-preview';
+const DEFAULT_MODEL = 'gemini-3.5-flash';
 const TEMPERATURE = 0.3;
 const MAX_OUTPUT_TOKENS = 2048;
 const API_TIMEOUT_MS = 120_000;
