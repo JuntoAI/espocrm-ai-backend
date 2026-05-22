@@ -4,7 +4,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MCP_SRC="${SCRIPT_DIR}/../EspoMCP/EspoMCP"
+MCP_SRC="${SCRIPT_DIR}/../espocrm-mcp-server/EspoMCP"
 MCP_DEST="${SCRIPT_DIR}/mcp-server"
 
 rm -rf "$MCP_DEST"
