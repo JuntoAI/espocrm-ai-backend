@@ -67,6 +67,12 @@ export interface ChatResult {
   message: string;
   toolsUsed: ToolExecution[];
   sources: SearchSource[];
+  /** Token usage metadata from Gemini API. */
+  usage: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  };
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -619,6 +625,10 @@ export class GeminiService {
     const toolsUsed: ToolExecution[] = [];
     const sources: SearchSource[] = [];
 
+    // Track accumulated token usage across all Gemini rounds
+    let totalPromptTokens = 0;
+    let totalCompletionTokens = 0;
+
     // Function call loop: keep going until we get a text response
     let round = 0;
     while (round < MAX_FUNCTION_CALL_ROUNDS) {
@@ -661,6 +671,7 @@ export class GeminiService {
               message: `I encountered a technical issue mid-conversation but completed some operations:\n\n${toolSummary}\n\nPlease try your request again if more actions are needed.`,
               toolsUsed,
               sources,
+              usage: { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, totalTokens: totalPromptTokens + totalCompletionTokens },
             };
           }
 
@@ -669,12 +680,20 @@ export class GeminiService {
             message: 'I encountered a technical issue processing this request. Please try again — starting a new message usually resolves this.',
             toolsUsed: [],
             sources: [],
+            usage: { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, totalTokens: totalPromptTokens + totalCompletionTokens },
           };
         }
         // Re-throw non-thought_signature errors
         throw err;
       }
       const response = result.response;
+
+      // Accumulate token usage from this round
+      const usageMetadata = response.usageMetadata;
+      if (usageMetadata) {
+        totalPromptTokens += usageMetadata.promptTokenCount ?? 0;
+        totalCompletionTokens += usageMetadata.candidatesTokenCount ?? 0;
+      }
 
       // Extract grounding sources from the response
       const candidate = response.candidates?.[0];
@@ -715,7 +734,7 @@ export class GeminiService {
           });
         }
 
-        return { message: finalMessage, toolsUsed, sources };
+        return { message: finalMessage, toolsUsed, sources, usage: { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, totalTokens: totalPromptTokens + totalCompletionTokens } };
       }
 
       // Execute function calls sequentially using the extracted helper
@@ -783,6 +802,7 @@ export class GeminiService {
         'I completed several operations but reached the maximum number of steps. Here is what I did so far.',
       toolsUsed,
       sources,
+      usage: { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, totalTokens: totalPromptTokens + totalCompletionTokens },
     };
   }
 

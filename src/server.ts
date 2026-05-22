@@ -437,7 +437,17 @@ export function createServer(deps: ServerDependencies): Express {
           toolsUsed: chatResult.toolsUsed.length,
         });
 
-        res.json(response);
+        res.json({
+          ...response,
+          model: sessionManager.getModel(user.userId),
+          _usage: {
+            promptTokens: chatResult.usage.promptTokens,
+            completionTokens: chatResult.usage.completionTokens,
+            totalTokens: chatResult.usage.totalTokens,
+            toolCalls: chatResult.toolsUsed.length,
+            toolNames: chatResult.toolsUsed.map((t) => t.tool),
+          },
+        });
       } catch (err) {
         next(err);
       }
@@ -554,7 +564,17 @@ export function createServer(deps: ServerDependencies): Express {
             response.sources = chatResult.sources;
           }
 
-          res.json(response);
+          res.json({
+            ...response,
+            model: sessionManager.getModel(user.userId),
+            _usage: {
+              promptTokens: chatResult.usage.promptTokens,
+              completionTokens: chatResult.usage.completionTokens,
+              totalTokens: chatResult.usage.totalTokens,
+              toolCalls: chatResult.toolsUsed.length,
+              toolNames: chatResult.toolsUsed.map((t) => t.tool),
+            },
+          });
           return;
         }
 
