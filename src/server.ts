@@ -445,6 +445,7 @@ export function createServer(deps: ServerDependencies): Express {
             completionTokens: chatResult.usage.completionTokens,
             totalTokens: chatResult.usage.totalTokens,
             toolCalls: chatResult.toolsUsed.length,
+            toolErrors: chatResult.toolsUsed.filter((t) => !t.success).length,
             toolNames: chatResult.toolsUsed.map((t) => t.tool),
           },
         });
@@ -572,6 +573,7 @@ export function createServer(deps: ServerDependencies): Express {
               completionTokens: chatResult.usage.completionTokens,
               totalTokens: chatResult.usage.totalTokens,
               toolCalls: chatResult.toolsUsed.length,
+              toolErrors: chatResult.toolsUsed.filter((t) => !t.success).length,
               toolNames: chatResult.toolsUsed.map((t) => t.tool),
             },
           });
