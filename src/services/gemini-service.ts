@@ -189,6 +189,7 @@ You can manage the knowledge base with these tools:
 - Use code blocks for IDs or technical values
 - Keep responses concise and actionable
 - When showing search results, format them as readable lists with key fields
+- When drafting emails for the user, present the subject and body as plain text — do NOT use blockquote syntax (> prefix). Just write the email content directly.
 - IMPORTANT: When referencing CRM records (contacts, accounts, leads, opportunities, meetings, tasks, cases), ALWAYS include a clickable link using this exact format: [Record Name](#EntityType/view/RECORD_ID)
   - Examples: [Maria Mc Menamin](#Contact/view/abc123), [Sure Valley Ventures](#Account/view/def456), [Series A Deal](#Opportunity/view/ghi789)
   - Use the entity type with capital first letter: Contact, Account, Lead, Opportunity, Meeting, Task, Case, Call
