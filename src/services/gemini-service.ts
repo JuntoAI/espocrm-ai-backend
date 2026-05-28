@@ -83,7 +83,7 @@ export interface ChatResult {
 
 const DEFAULT_MODEL = 'gemini-3.5-flash';
 const TEMPERATURE = 0.3;
-const MAX_OUTPUT_TOKENS = 8192;
+const MAX_OUTPUT_TOKENS = 16384;
 const API_TIMEOUT_MS = 120_000;
 const RETRY_BACKOFF_MS = 2_000;
 const MAX_FUNCTION_CALL_ROUNDS = 40;
@@ -191,7 +191,15 @@ You can manage the knowledge base with these tools:
   - Examples: [Maria Mc Menamin](#Contact/view/abc123), [Sure Valley Ventures](#Account/view/def456), [Series A Deal](#Opportunity/view/ghi789)
   - Use the entity type with capital first letter: Contact, Account, Lead, Opportunity, Meeting, Task, Case, Call
   - Always use the record ID returned by the CRM tools
-  - For search results, include a link for each record found`;
+  - For search results, include a link for each record found
+
+## Efficiency Rules
+- LIMIT yourself to a maximum of 15 tool calls per user message. If you need more data, summarize what you have and ask the user to be more specific.
+- Do NOT exhaustively search every entity type unless the user explicitly asks for a comprehensive overview.
+- When searching for notes, make at most 3 search_notes calls. If you don't find relevant notes in 3 tries, report what you found and move on.
+- Prefer targeted searches (with specific filters) over broad unfiltered searches.
+- If a search returns empty results, do NOT retry with slightly different parameters — report that no results were found.
+- Compose your response as soon as you have enough information to answer the user's question. Do not keep searching for more data "just in case".`;
 
 // ────────────────────────────────────────────────────────────────
 // Pure utility functions (exported for testing)
@@ -751,17 +759,39 @@ export class GeminiService {
         const textParts = parts
           .filter((p) => p.text !== undefined)
           .map((p) => p.text as string);
-        const finalMessage =
-          textParts.join('') || 'I was unable to generate a response.';
+        let finalMessage = textParts.join('');
 
-        if (!textParts.length) {
-          logger.warn('GeminiService: no text in final response', {
-            round,
-            partsCount: parts.length,
-            partTypes: parts.map((p) => Object.keys(p).filter(k => k !== '_meta')),
-            hasCandidate: !!candidate,
-            finishReason: candidate?.finishReason,
-          });
+        if (!finalMessage) {
+          // No text at all — check if this is a MAX_TOKENS issue
+          const finishReason = candidate?.finishReason;
+
+          if (finishReason === 'MAX_TOKENS') {
+            logger.warn('GeminiService: MAX_TOKENS hit with no text output', {
+              round,
+              toolsUsedCount: toolsUsed.length,
+            });
+
+            // If we executed tools, provide a summary of what was done
+            if (toolsUsed.length > 0) {
+              const successfulTools = toolsUsed.filter((t) => t.success);
+              const toolSummary = successfulTools
+                .slice(-10) // Last 10 tool calls
+                .map((t) => `- **${t.tool}**: ${t.summary}`)
+                .join('\n');
+              finalMessage = `I gathered the information but ran into a processing limit while composing my response. Here's a summary of what I found:\n\n${toolSummary}\n\nPlease try asking a more specific question so I can give you a focused answer.`;
+            } else {
+              finalMessage = 'Your request was too complex for me to process in one go. Please try breaking it into smaller, more specific questions.';
+            }
+          } else {
+            logger.warn('GeminiService: no text in final response', {
+              round,
+              partsCount: parts.length,
+              partTypes: parts.map((p) => Object.keys(p).filter(k => k !== '_meta')),
+              hasCandidate: !!candidate,
+              finishReason,
+            });
+            finalMessage = 'I was unable to generate a response. Please try rephrasing your question.';
+          }
         }
 
         return { message: finalMessage, toolsUsed, sources, usage: { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, totalTokens: totalPromptTokens + totalCompletionTokens } };
