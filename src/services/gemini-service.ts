@@ -87,6 +87,8 @@ const MAX_OUTPUT_TOKENS = 16384;
 const API_TIMEOUT_MS = 120_000;
 const RETRY_BACKOFF_MS = 2_000;
 const MAX_FUNCTION_CALL_ROUNDS = 40;
+/** Maximum size (in characters) for a single tool response before truncation. */
+const MAX_TOOL_RESPONSE_SIZE = 50_000;
 
 // ────────────────────────────────────────────────────────────────
 // System prompt
@@ -693,6 +695,37 @@ export class GeminiService {
         // conversation history gets corrupted, we recover by trimming the
         // problematic history and returning what we have so far.
         const errMsg = err instanceof Error ? err.message : String(err);
+
+        // Handle input token limit exceeded — tool responses made context too large
+        if (errMsg.includes('input token count exceeds') || errMsg.includes('token count exceeds the maximum')) {
+          logger.warn('GeminiService: input token limit exceeded, returning partial results', {
+            round,
+            toolsUsedCount: toolsUsed.length,
+            error: errMsg,
+          });
+
+          if (toolsUsed.length > 0) {
+            const successfulTools = toolsUsed.filter((t) => t.success);
+            const toolSummary = successfulTools
+              .slice(-10)
+              .map((t) => `- **${t.tool}**: ${t.summary}`)
+              .join('\n');
+            return {
+              message: `I gathered too much data and hit a processing limit. Here's what I found so far:\n\n${toolSummary}\n\nPlease ask a more specific question so I can give you a focused answer.`,
+              toolsUsed,
+              sources,
+              usage: { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, totalTokens: totalPromptTokens + totalCompletionTokens },
+            };
+          }
+
+          return {
+            message: 'Your request generated too much data for me to process at once. Please try a more specific question.',
+            toolsUsed: [],
+            sources: [],
+            usage: { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, totalTokens: totalPromptTokens + totalCompletionTokens },
+          };
+        }
+
         if (errMsg.includes('thought_signature')) {
           logger.warn('GeminiService: thought_signature error, recovering gracefully', {
             round,
@@ -826,14 +859,33 @@ export class GeminiService {
         });
       }
 
-      // Build function response parts for Gemini
+      // Build function response parts for Gemini (with size cap to prevent context overflow)
       const functionResponseParts: Part[] = execResult.functionResponses.map(
-        (fr) => ({
-          functionResponse: {
-            name: fr.name,
-            response: fr.response,
-          },
-        }),
+        (fr) => {
+          let response = fr.response;
+          const serialized = JSON.stringify(response);
+
+          if (serialized.length > MAX_TOOL_RESPONSE_SIZE) {
+            logger.warn('GeminiService: truncating oversized tool response', {
+              tool: fr.name,
+              originalSize: serialized.length,
+              maxSize: MAX_TOOL_RESPONSE_SIZE,
+            });
+            response = {
+              _truncated: true,
+              _originalSize: serialized.length,
+              message: `Response from ${fr.name} was too large (${Math.round(serialized.length / 1024)}KB). Only the first portion is shown. Please use more specific filters to narrow results.`,
+              data: serialized.slice(0, MAX_TOOL_RESPONSE_SIZE),
+            };
+          }
+
+          return {
+            functionResponse: {
+              name: fr.name,
+              response,
+            },
+          };
+        },
       );
 
       // Add function responses to the conversation
