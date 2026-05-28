@@ -14,6 +14,7 @@ import { GeminiService } from './services/gemini-service.js';
 import { SessionManager } from './services/session-manager.js';
 import { RateLimiter } from './services/rate-limiter.js';
 import { PDFHandler } from './services/pdf-handler.js';
+import { KnowledgeStore } from './services/knowledge-store.js';
 import { convertAllSchemas } from './utils/schema-converter.js';
 import { HARDCODED_TOOL_SCHEMAS } from './utils/tool-schemas.js';
 import { createServer } from './server.js';
@@ -26,6 +27,7 @@ import type { FunctionDeclaration } from '@google-cloud/vertexai';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
 const UPLOAD_DIR = process.env.UPLOAD_DIR ?? '/tmp/uploads';
+const KNOWLEDGE_PATH = process.env.KNOWLEDGE_PATH ?? '/data/knowledge';
 const GRACEFUL_SHUTDOWN_TIMEOUT_MS = 10_000;
 
 // ────────────────────────────────────────────────────────────────
@@ -39,21 +41,36 @@ async function main(): Promise<void> {
   const sessionManager = new SessionManager();
   const rateLimiter = new RateLimiter();
   const pdfHandler = new PDFHandler(UPLOAD_DIR);
+  const knowledgeStore = new KnowledgeStore(KNOWLEDGE_PATH);
 
   // 2. Ensure upload directory exists
   await pdfHandler.ensureUploadDir();
 
+  // 2b. Initialize knowledge store (loads global docs)
+  await knowledgeStore.initialize();
+  knowledgeStore.startRefresh();
+
   // 3. Load tool schemas — try MCP server first, fall back to hardcoded
   const mcpBridge = new MCPBridge();
   let toolSchemas: typeof HARDCODED_TOOL_SCHEMAS;
+
+  // Backend-only tools (not in MCP server) that must always be registered with Gemini
+  const BACKEND_ONLY_TOOLS = HARDCODED_TOOL_SCHEMAS.filter((t) =>
+    ['fetch_url', 'draft_email', 'list_knowledge', 'update_knowledge', 'delete_knowledge'].includes(t.name),
+  );
 
   const mcpServerPath = process.env.MCP_SERVER_PATH;
   if (mcpServerPath) {
     try {
       await mcpBridge.connect();
       const mcpSchemas = mcpBridge.getToolSchemas();
-      toolSchemas = mcpSchemas as typeof HARDCODED_TOOL_SCHEMAS;
-      logger.info('Tool schemas loaded from MCP server', { count: toolSchemas.length });
+      // Merge MCP tools + backend-only tools
+      toolSchemas = [...mcpSchemas, ...BACKEND_ONLY_TOOLS] as typeof HARDCODED_TOOL_SCHEMAS;
+      logger.info('Tool schemas loaded from MCP server + backend tools', {
+        mcpTools: mcpSchemas.length,
+        backendTools: BACKEND_ONLY_TOOLS.length,
+        total: toolSchemas.length,
+      });
     } catch (err) {
       logger.warn('MCP server unavailable, using hardcoded tool schemas', {
         error: err instanceof Error ? err.message : String(err),
@@ -86,6 +103,7 @@ async function main(): Promise<void> {
       sessionManager,
       rateLimiter,
       pdfHandler,
+      knowledgeStore,
       uploadDir: UPLOAD_DIR,
     });
 
@@ -100,6 +118,7 @@ async function main(): Promise<void> {
       mcpBridge,
       sessionManager,
       pdfHandler,
+      knowledgeStore,
     });
   } catch (err) {
     logger.error('Failed to start AI Backend', {
@@ -117,6 +136,7 @@ interface ShutdownDeps {
   mcpBridge: MCPBridge;
   sessionManager: SessionManager;
   pdfHandler: PDFHandler;
+  knowledgeStore: KnowledgeStore;
 }
 
 function setupGracefulShutdown(
@@ -147,6 +167,7 @@ function setupGracefulShutdown(
       // Cleanup services
       deps.sessionManager.stopCleanupInterval();
       deps.pdfHandler.shutdown();
+      deps.knowledgeStore.stopRefresh();
       await deps.mcpBridge.disconnect();
 
       logger.info('Graceful shutdown complete');

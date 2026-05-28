@@ -45,6 +45,8 @@ export interface ChatParams {
   onToolCall: ToolCallCallback;
   model?: string;
   pdfContext?: string;
+  /** Persistent knowledge context (global + per-user) to inject into system prompt. */
+  knowledgeContext?: string;
   /** Files to include as inline data in the Gemini request. */
   files?: FileAttachment[];
 }
@@ -156,6 +158,27 @@ When creating or updating records, you MUST use ONLY these exact values for enum
 - Always confirm before executing delete or bulk update operations
 - When a user asks to delete something, describe what will be deleted and ask for confirmation before proceeding
 - Never execute destructive operations without explicit user approval
+
+## Knowledge Base
+You have a persistent knowledge base that stores information across conversations. This includes:
+- **Global knowledge** (shared): Company info, pitch deck, investment criteria — available to all users
+- **Personal knowledge** (per-user): Communication style, personal DNA, email preferences — unique to each user
+
+You can manage the knowledge base with these tools:
+- **list_knowledge**: Show what's stored (use when user asks "what do you know about me/us?")
+- **update_knowledge**: Add or update a document (use when user says "remember this", "add to my personal DNA", "update the pitch deck info")
+- **delete_knowledge**: Remove a document (use when user says "forget this", "remove the old...")
+
+### When to proactively mention the knowledge base:
+- If the user asks you to write an email but you have no personal context → suggest: "I can write better emails if you tell me about your communication style. Want me to save it to your personal knowledge base?"
+- If the user asks about VC matching but there's no company info → suggest: "I'd be more helpful with your pitch deck or investment criteria in the knowledge base. Want to add it?"
+- If the user asks "what do you know about me?" → use list_knowledge to show them
+
+### Knowledge base rules:
+- When updating knowledge, use clear descriptive filenames (e.g., "personal-dna", "investment-criteria", "pitch-deck")
+- For personal scope: communication style, values, email preferences, personal background
+- For global scope: company overview, product details, investment criteria, team info
+- Always confirm with the user before deleting knowledge documents
 
 ## Response Formatting
 - Use markdown formatting in responses
@@ -396,6 +419,10 @@ const TOOL_CATEGORIES: Record<string, { keywords: RegExp; tools: string[] }> = {
     keywords: /\b(email|draft|compose|write.*email|send.*email|message.*to|reach.*out)\b/i,
     tools: ['draft_email'],
   },
+  knowledge: {
+    keywords: /\b(knowledge|know about|personal dna|my style|my tone|pitch deck|remember|forget|update.*context|what do you know)\b/i,
+    tools: ['list_knowledge', 'update_knowledge', 'delete_knowledge'],
+  },
 };
 
 /**
@@ -553,7 +580,7 @@ export class GeminiService {
    * 5. Return final text + sources + tools used
    */
   async chat(params: ChatParams): Promise<ChatResult> {
-    const { message, history, onToolCall, pdfContext, files } = params;
+    const { message, history, onToolCall, pdfContext, knowledgeContext, files } = params;
     const modelName = this.getModel(params.model);
     const model = this.models.get(modelName);
 
@@ -577,8 +604,11 @@ export class GeminiService {
     } as Tool;
     tools.push(searchTool);
 
-    // Build system instruction with optional PDF context
+    // Build system instruction with optional knowledge context and PDF context
     let systemInstruction = SYSTEM_PROMPT;
+    if (knowledgeContext) {
+      systemInstruction += `\n\n${knowledgeContext}`;
+    }
     if (pdfContext) {
       systemInstruction += `\n\n## Uploaded PDF Content\nThe user has uploaded a PDF document. Here is the extracted text:\n\n${pdfContext}`;
     }

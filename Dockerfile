@@ -45,6 +45,7 @@ ENV MCP_SERVER_PATH=/app/mcp-server/build/index.js
 RUN mkdir -p /tmp/uploads && chown appuser:appgroup /tmp/uploads
 RUN mkdir -p /app/logs && chown appuser:appgroup /app/logs
 RUN mkdir -p /app/mcp-server/logs && chown appuser:appgroup /app/mcp-server/logs
+RUN mkdir -p /data/knowledge/global /data/knowledge/users && chown -R appuser:appgroup /data/knowledge
 
 USER appuser
 

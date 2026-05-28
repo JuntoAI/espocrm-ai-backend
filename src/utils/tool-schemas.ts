@@ -661,4 +661,40 @@ export const HARDCODED_TOOL_SCHEMAS: HardcodedToolSchema[] = [
       required: ['contactId', 'purpose', 'tone', 'keyPoints'],
     },
   },
+
+  // ── Knowledge Base Management ─────────────────────────
+  {
+    name: 'list_knowledge',
+    description: 'List all documents in the AI knowledge base. Shows global knowledge (shared company info like pitch deck, investment criteria) and personal knowledge (user-specific context like communication style, personal DNA). Use this when the user asks what the AI knows about them or their company.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: 'update_knowledge',
+    description: 'Create or update a knowledge document in the AI knowledge base. Use this when the user wants to add, update, or replace information that the AI should always remember — such as company details, personal communication style, investment criteria, or any persistent context. The content is injected into every future AI conversation automatically.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        scope: { type: 'string', description: 'Where to store: "global" (shared across all users — company info, pitch deck) or "personal" (only for the current user — communication style, personal DNA)', enum: ['global', 'personal'] },
+        filename: { type: 'string', description: 'Filename for the document (use kebab-case, e.g. "personal-dna", "investment-criteria"). Extension .md is added automatically.' },
+        content: { type: 'string', description: 'The full markdown content to store. This replaces any existing content in the file.' },
+      },
+      required: ['scope', 'filename', 'content'],
+    },
+  },
+  {
+    name: 'delete_knowledge',
+    description: 'Delete a knowledge document from the AI knowledge base. Use this when the user wants to remove outdated or incorrect persistent context.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        scope: { type: 'string', description: 'Where the document is stored: "global" or "personal"', enum: ['global', 'personal'] },
+        filename: { type: 'string', description: 'Filename to delete (with or without .md extension)' },
+      },
+      required: ['scope', 'filename'],
+    },
+  },
 ];

@@ -54,14 +54,21 @@ generate 3-5 prioritized action recommendations. Each recommendation must includ
 2. A reason explaining why it matters (urgency, revenue impact, relationship risk)
 3. A suggested chat command the user can execute
 
+Rules for variety and freshness:
+- VARY your recommendations each time. Don't always lead with the same item.
+- If multiple items are overdue, rotate which one you highlight first based on the current date.
+- Use DIFFERENT suggested commands each time (e.g., alternate between "draft email", "search opportunities", "show contacts for").
+- Reference specific numbers (days overdue, contact counts) to make each brief feel current.
+- For stalled accounts with many contacts, suggest re-engaging specific contacts rather than the account generically.
+
 Prioritize by: revenue at risk > relationship decay > task overdue duration.
 If the data shows no issues, return a positive summary indicating healthy pipeline.
 
 You MUST respond with valid JSON only. No markdown, no code fences, no explanation outside the JSON.
 Respond with a JSON array of objects, each with these exact keys:
-- "description": string (what to do)
-- "reason": string (why it matters)
-- "suggestedCommand": string (a chat command like "draft email to [contact]" or "search opportunities stage Prospecting")
+- "description": string (what to do — be specific and actionable)
+- "reason": string (why it matters — include numbers)
+- "suggestedCommand": string (a chat command like "draft email to [contact] about [topic]" or "search opportunities stage Prospecting")
 
 Example response:
 [
@@ -238,7 +245,11 @@ export class BriefGenerator {
   private buildGeminiPrompt(analysis: CrmAnalysisResult): string {
     const sections: string[] = [];
 
-    sections.push('## CRM Analysis Data\n');
+    // Include current date for temporal awareness
+    const today = new Date();
+    const dateStr = today.toISOString().split('T')[0];
+    const dayOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][today.getDay()];
+    sections.push(`## CRM Analysis Data (${dayOfWeek}, ${dateStr})\n`);
 
     // Overdue opportunities
     if (analysis.overdueOpportunities.length > 0) {
@@ -276,7 +287,7 @@ export class BriefGenerator {
       sections.push('');
     }
 
-    sections.push('Based on this data, generate prioritized action recommendations as a JSON array.');
+    sections.push('Based on this data, generate prioritized action recommendations as a JSON array. Today is ' + dateStr + ' (' + dayOfWeek + '). Vary your focus — pick different items to lead with than yesterday would have.');
 
     return sections.join('\n');
   }
@@ -414,7 +425,7 @@ export class BriefGenerator {
       return vertexAI.getGenerativeModel({
         model: modelName,
         generationConfig: {
-          temperature: 0.3,
+          temperature: 0.7,
           maxOutputTokens: 2048,
         },
       });

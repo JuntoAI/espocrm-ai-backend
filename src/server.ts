@@ -39,6 +39,7 @@ import { BriefCache } from './services/brief-cache.js';
 import { BriefGenerator } from './services/brief-generator.js';
 import { CrmAnalyzer } from './services/crm-analyzer.js';
 import { UserConfigStore } from './services/user-config-store.js';
+import type { KnowledgeStore } from './services/knowledge-store.js';
 import type { Content } from '@google-cloud/vertexai';
 import type { FileAttachment } from './services/gemini-service.js';
 import type { FileContext } from './services/session-manager.js';
@@ -54,6 +55,7 @@ export interface ServerDependencies {
   sessionManager: SessionManager;
   rateLimiter: RateLimiter;
   pdfHandler: PDFHandler;
+  knowledgeStore?: KnowledgeStore;
   espocrmUrl?: string;
   uploadDir?: string;
 }
@@ -93,6 +95,7 @@ export function createServer(deps: ServerDependencies): Express {
     sessionManager,
     rateLimiter,
     pdfHandler,
+    knowledgeStore,
     espocrmUrl,
     uploadDir,
   } = deps;
@@ -365,6 +368,11 @@ export function createServer(deps: ServerDependencies): Express {
         const history = buildHistory(sessionManager.getHistory(user.userId));
         const pdfContext = sessionManager.getPdfContext(user.userId);
 
+        // 5b. Load persistent knowledge context (global + per-user)
+        const knowledgeContext = knowledgeStore
+          ? await knowledgeStore.getContextForUser(user.userId)
+          : '';
+
         // 6. Call Gemini with function call loop (include any uploaded files)
         const sessionFiles = sessionManager.getFiles(user.userId);
         const fileAttachments = sessionFiles.length > 0
@@ -387,6 +395,21 @@ export function createServer(deps: ServerDependencies): Express {
                 user.apiKey,
               );
             }
+            // Route knowledge tools to KnowledgeStore
+            if (toolName === 'list_knowledge' && knowledgeStore) {
+              const docs = await knowledgeStore.listDocuments(user.userId);
+              return { result: JSON.stringify(docs, null, 2) };
+            }
+            if (toolName === 'update_knowledge' && knowledgeStore) {
+              const { scope, filename, content } = args as { scope: 'global' | 'personal'; filename: string; content: string };
+              const result = await knowledgeStore.writeDocument(scope, filename, content, user.userId);
+              return { result: JSON.stringify(result) };
+            }
+            if (toolName === 'delete_knowledge' && knowledgeStore) {
+              const { scope, filename } = args as { scope: 'global' | 'personal'; filename: string };
+              const result = await knowledgeStore.deleteDocument(scope, filename, user.userId);
+              return { result: JSON.stringify(result) };
+            }
             // Everything else → MCP bridge (CRM Executor)
             return await mcpBridge.callTool(
               toolName,
@@ -397,6 +420,7 @@ export function createServer(deps: ServerDependencies): Express {
           },
           model: sessionManager.getModel(user.userId),
           pdfContext: pdfContext?.extractedText,
+          knowledgeContext,
           files: fileAttachments,
         });
 
@@ -517,6 +541,11 @@ export function createServer(deps: ServerDependencies): Express {
           const allFiles = sessionManager.getFiles(user.userId);
           const fileAttachments = await buildFileAttachments(allFiles);
 
+          // Load persistent knowledge context
+          const knowledgeContext = knowledgeStore
+            ? await knowledgeStore.getContextForUser(user.userId)
+            : '';
+
           const chatResult = await geminiService.chat({
             message: bodyMessage,
             history,
@@ -532,6 +561,21 @@ export function createServer(deps: ServerDependencies): Express {
                   user.apiKey,
                 );
               }
+              // Route knowledge tools to KnowledgeStore
+              if (toolName === 'list_knowledge' && knowledgeStore) {
+                const docs = await knowledgeStore.listDocuments(user.userId);
+                return { result: JSON.stringify(docs, null, 2) };
+              }
+              if (toolName === 'update_knowledge' && knowledgeStore) {
+                const { scope, filename, content } = args as { scope: 'global' | 'personal'; filename: string; content: string };
+                const result = await knowledgeStore.writeDocument(scope, filename, content, user.userId);
+                return { result: JSON.stringify(result) };
+              }
+              if (toolName === 'delete_knowledge' && knowledgeStore) {
+                const { scope, filename } = args as { scope: 'global' | 'personal'; filename: string };
+                const result = await knowledgeStore.deleteDocument(scope, filename, user.userId);
+                return { result: JSON.stringify(result) };
+              }
               return await mcpBridge.callTool(
                 toolName,
                 args as Record<string, unknown>,
@@ -540,6 +584,7 @@ export function createServer(deps: ServerDependencies): Express {
               );
             },
             model: sessionManager.getModel(user.userId),
+            knowledgeContext,
             files: fileAttachments,
           });
 
@@ -586,6 +631,40 @@ export function createServer(deps: ServerDependencies): Express {
           message: `"${file.originalname}" uploaded successfully (${fileCount} file${fileCount > 1 ? 's' : ''} in session). You can now ask questions about ${fileCount > 1 ? 'them' : 'it'}.`,
           sessionId: session.id,
         } satisfies ChatResponse);
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  // ── GET /knowledge ────────────────────────────────────────
+  // Returns a summary of loaded knowledge documents (for debugging/admin)
+  app.post(
+    '/knowledge',
+    authMiddleware,
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        if (!knowledgeStore) {
+          res.json({ enabled: false, message: 'Knowledge store not configured' });
+          return;
+        }
+
+        const user = req.validatedUser!;
+        const summary = await knowledgeStore.getSummary(user.userId);
+
+        res.json({
+          enabled: true,
+          global: {
+            documentCount: summary.globalDocCount,
+            totalChars: summary.globalTotalChars,
+            files: summary.globalFiles,
+          },
+          user: {
+            documentCount: summary.userDocCount,
+            totalChars: summary.userTotalChars,
+            files: summary.userFiles,
+          },
+        });
       } catch (err) {
         next(err);
       }
