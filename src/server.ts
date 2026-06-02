@@ -416,6 +416,7 @@ export function createServer(deps: ServerDependencies): Express {
               args as Record<string, unknown>,
               user.apiKey,
               user.userId,
+              user.userName,
             );
           },
           model: sessionManager.getModel(user.userId),
@@ -468,6 +469,7 @@ export function createServer(deps: ServerDependencies): Express {
             promptTokens: chatResult.usage.promptTokens,
             completionTokens: chatResult.usage.completionTokens,
             totalTokens: chatResult.usage.totalTokens,
+            cachedTokens: chatResult.usage.cachedTokens,
             toolCalls: chatResult.toolsUsed.length,
             toolErrors: chatResult.toolsUsed.filter((t) => !t.success).length,
             toolNames: chatResult.toolsUsed.map((t) => t.tool),
@@ -581,6 +583,7 @@ export function createServer(deps: ServerDependencies): Express {
                 args as Record<string, unknown>,
                 user.apiKey,
                 user.userId,
+                user.userName,
               );
             },
             model: sessionManager.getModel(user.userId),
@@ -617,6 +620,7 @@ export function createServer(deps: ServerDependencies): Express {
               promptTokens: chatResult.usage.promptTokens,
               completionTokens: chatResult.usage.completionTokens,
               totalTokens: chatResult.usage.totalTokens,
+              cachedTokens: chatResult.usage.cachedTokens,
               toolCalls: chatResult.toolsUsed.length,
               toolErrors: chatResult.toolsUsed.filter((t) => !t.success).length,
               toolNames: chatResult.toolsUsed.map((t) => t.tool),

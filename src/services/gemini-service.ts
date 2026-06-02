@@ -74,6 +74,8 @@ export interface ChatResult {
     promptTokens: number;
     completionTokens: number;
     totalTokens: number;
+    /** Portion of promptTokens served from Vertex implicit cache (90% cheaper). */
+    cachedTokens: number;
   };
 }
 
@@ -190,6 +192,7 @@ You can manage the knowledge base with these tools:
 - Keep responses concise and actionable
 - When showing search results, format them as readable lists with key fields
 - When drafting emails for the user, present the subject and body as plain text — do NOT use blockquote syntax (> prefix). Just write the email content directly.
+- IMPORTANT: Do NOT call add_note to log the full content of a drafted or sent email. EspoCRM's built-in email tracking already creates a stream entry when an email is sent. Adding a note with the email content creates a duplicate. Only use add_note for brief action summaries (e.g., "Sent follow-up bump email to Gautam regarding the Digital ops deal") — never paste the email body into a note.
 - IMPORTANT: When referencing CRM records (contacts, accounts, leads, opportunities, meetings, tasks, cases), ALWAYS include a clickable link using this exact format: [Record Name](#EntityType/view/RECORD_ID)
   - Examples: [Maria Mc Menamin](#Contact/view/abc123), [Sure Valley Ventures](#Account/view/def456), [Series A Deal](#Opportunity/view/ghi789)
   - Use the entity type with capital first letter: Contact, Account, Lead, Opportunity, Meeting, Task, Case, Call
@@ -437,16 +440,43 @@ const TOOL_CATEGORIES: Record<string, { keywords: RegExp; tools: string[] }> = {
 };
 
 /**
- * Select relevant tools based on the user message.
- * Always includes a core set (search_contacts, search_accounts) as fallback.
+ * Core tools that are ALWAYS included regardless of message keywords.
+ *
+ * Derived from real usage data: these are the high-frequency workhorse
+ * tools the model reaches for across almost every conversation (search_notes
+ * alone is the single most-called tool). Keyword matching is unreliable for
+ * these because a message like "what's the latest with Acme?" needs note/
+ * entity search without ever containing the word "note".
+ *
+ * Backend-only tools (fetch_url, draft_email, knowledge tools) are NOT here —
+ * they are reliably keyword-gated and rarely needed, so they stay opt-in.
+ */
+const CORE_TOOLS: readonly string[] = [
+  'search_contacts',
+  'search_accounts',
+  'search_entity',
+  'get_entity',
+  'update_entity',
+  'search_notes',
+  'add_note',
+  'search_tasks',
+  'get_task',
+  'get_contact',
+];
+
+/**
+ * Select relevant tool NAMES based on the user message.
+ *
+ * Always includes CORE_TOOLS, then adds category tools whose keyword
+ * pattern matches the message. The result is intentionally a subset of
+ * the full tool list to reduce the per-request schema payload (~10.7K
+ * tokens for all 46 tools) — the largest single contributor to prompt
+ * token usage.
+ *
  * Returns deduplicated tool names.
  */
 export function selectToolsForMessage(message: string): Set<string> {
-  const selected = new Set<string>();
-
-  // Always include core search tools — the model often needs these
-  selected.add('search_contacts');
-  selected.add('search_accounts');
+  const selected = new Set<string>(CORE_TOOLS);
 
   // Match categories based on message keywords
   for (const category of Object.values(TOOL_CATEGORIES)) {
@@ -455,16 +485,6 @@ export function selectToolsForMessage(message: string): Set<string> {
         selected.add(tool);
       }
     }
-  }
-
-  // If nothing matched beyond defaults, include all search tools
-  // so the model can still discover data
-  if (selected.size <= 2) {
-    selected.add('search_opportunities');
-    selected.add('search_leads');
-    selected.add('search_meetings');
-    selected.add('search_tasks');
-    selected.add('search_users');
   }
 
   return selected;
@@ -599,16 +619,41 @@ export class GeminiService {
       throw new Error(`Model "${modelName}" is not initialized.`);
     }
 
-    // Build tools array: all function declarations + search grounding
+    // Build tools array: relevant function declarations + search grounding.
+    //
+    // Tool subsetting: instead of sending all 46+ schemas (~10.7K tokens) on
+    // every request, select only the tools relevant to this message plus a
+    // core always-on set. This is computed ONCE per request and reused across
+    // all function-call rounds so the request prefix stays byte-identical,
+    // which maximizes Vertex implicit cache hits on rounds 2..N.
+    //
+    // Set DISABLE_TOOL_SUBSETTING=true to fall back to sending all tools.
     const tools: Tool[] = [];
     if (this.toolDeclarations.length > 0) {
+      let activeDeclarations = this.toolDeclarations;
+
+      if (process.env.DISABLE_TOOL_SUBSETTING !== 'true') {
+        const selectedNames = selectToolsForMessage(message);
+        const filtered = this.toolDeclarations.filter((d) =>
+          selectedNames.has(d.name),
+        );
+        // Safety: never send an empty tool list — fall back to all tools.
+        activeDeclarations = filtered.length > 0 ? filtered : this.toolDeclarations;
+
+        logger.info('GeminiService: tools selected for request', {
+          selected: activeDeclarations.length,
+          total: this.toolDeclarations.length,
+        });
+      } else {
+        logger.info('GeminiService: tool subsetting disabled, sending all tools', {
+          total: this.toolDeclarations.length,
+        });
+      }
+
       const fnTool: FunctionDeclarationsTool = {
-        functionDeclarations: this.toolDeclarations,
+        functionDeclarations: activeDeclarations,
       };
       tools.push(fnTool);
-      logger.info('GeminiService: all tools included in request', {
-        total: this.toolDeclarations.length,
-      });
     }
     const searchTool = {
       googleSearch: {},
@@ -669,6 +714,7 @@ export class GeminiService {
     // Track accumulated token usage across all Gemini rounds
     let totalPromptTokens = 0;
     let totalCompletionTokens = 0;
+    let totalCachedTokens = 0;
 
     // Function call loop: keep going until we get a text response
     let round = 0;
@@ -715,7 +761,7 @@ export class GeminiService {
               message: `I gathered too much data and hit a processing limit. Here's what I found so far:\n\n${toolSummary}\n\nPlease ask a more specific question so I can give you a focused answer.`,
               toolsUsed,
               sources,
-              usage: { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, totalTokens: totalPromptTokens + totalCompletionTokens },
+              usage: { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, totalTokens: totalPromptTokens + totalCompletionTokens, cachedTokens: totalCachedTokens },
             };
           }
 
@@ -723,7 +769,7 @@ export class GeminiService {
             message: 'Your request generated too much data for me to process at once. Please try a more specific question.',
             toolsUsed: [],
             sources: [],
-            usage: { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, totalTokens: totalPromptTokens + totalCompletionTokens },
+            usage: { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, totalTokens: totalPromptTokens + totalCompletionTokens, cachedTokens: totalCachedTokens },
           };
         }
 
@@ -743,7 +789,7 @@ export class GeminiService {
               message: `I encountered a technical issue mid-conversation but completed some operations:\n\n${toolSummary}\n\nPlease try your request again if more actions are needed.`,
               toolsUsed,
               sources,
-              usage: { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, totalTokens: totalPromptTokens + totalCompletionTokens },
+              usage: { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, totalTokens: totalPromptTokens + totalCompletionTokens, cachedTokens: totalCachedTokens },
             };
           }
 
@@ -752,7 +798,7 @@ export class GeminiService {
             message: 'I encountered a technical issue processing this request. Please try again — starting a new message usually resolves this.',
             toolsUsed: [],
             sources: [],
-            usage: { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, totalTokens: totalPromptTokens + totalCompletionTokens },
+            usage: { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, totalTokens: totalPromptTokens + totalCompletionTokens, cachedTokens: totalCachedTokens },
           };
         }
         // Re-throw non-thought_signature errors
@@ -765,6 +811,7 @@ export class GeminiService {
       if (usageMetadata) {
         totalPromptTokens += usageMetadata.promptTokenCount ?? 0;
         totalCompletionTokens += usageMetadata.candidatesTokenCount ?? 0;
+        totalCachedTokens += usageMetadata.cachedContentTokenCount ?? 0;
       }
 
       // Extract grounding sources from the response
@@ -828,7 +875,7 @@ export class GeminiService {
           }
         }
 
-        return { message: finalMessage, toolsUsed, sources, usage: { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, totalTokens: totalPromptTokens + totalCompletionTokens } };
+        return { message: finalMessage, toolsUsed, sources, usage: { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, totalTokens: totalPromptTokens + totalCompletionTokens, cachedTokens: totalCachedTokens } };
       }
 
       // Execute function calls sequentially using the extracted helper
@@ -915,7 +962,7 @@ export class GeminiService {
         'I completed several operations but reached the maximum number of steps. Here is what I did so far.',
       toolsUsed,
       sources,
-      usage: { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, totalTokens: totalPromptTokens + totalCompletionTokens },
+      usage: { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, totalTokens: totalPromptTokens + totalCompletionTokens, cachedTokens: totalCachedTokens },
     };
   }
 

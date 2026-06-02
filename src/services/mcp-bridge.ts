@@ -128,6 +128,8 @@ export class MCPBridge {
    * @param toolName    MCP tool name (e.g. `create_contact`)
    * @param args        Tool arguments from Gemini function call
    * @param userApiKey  The requesting user's EspoCRM API key
+   * @param userId      The requesting user's EspoCRM user ID
+   * @param userName    The requesting user's display name (for attribution)
    * @returns           The text content from the MCP tool result
    * @throws            Error if the bridge is disconnected or the
    *                    MCP server returns an error
@@ -137,6 +139,7 @@ export class MCPBridge {
     args: Record<string, unknown>,
     userApiKey: string,
     userId?: string,
+    userName?: string,
   ): Promise<unknown> {
     if (!this.client || !this.connected) {
       // Try to wait for reconnection if one is in progress
@@ -153,6 +156,7 @@ export class MCPBridge {
         ...args,
         _apiKeyOverride: userApiKey,
         ...(userId ? { _userIdOverride: userId } : {}),
+        ...(userName ? { _userNameOverride: userName } : {}),
       },
     });
 

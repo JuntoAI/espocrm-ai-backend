@@ -1,6 +1,6 @@
 {
   "name": "espocrm-ai-backend",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "AI Backend service for EspoCRM - bridges Gemini function calling with MCP CRM tools",
   "license": "MIT",
   "author": "JuntoAI",
