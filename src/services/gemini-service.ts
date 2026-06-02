@@ -812,6 +812,15 @@ export class GeminiService {
         totalPromptTokens += usageMetadata.promptTokenCount ?? 0;
         totalCompletionTokens += usageMetadata.candidatesTokenCount ?? 0;
         totalCachedTokens += usageMetadata.cachedContentTokenCount ?? 0;
+
+        if (usageMetadata.cachedContentTokenCount) {
+          logger.info('GeminiService: implicit cache hit', {
+            round,
+            cachedTokens: usageMetadata.cachedContentTokenCount,
+            promptTokens: usageMetadata.promptTokenCount,
+            cacheHitPct: Math.round(((usageMetadata.cachedContentTokenCount ?? 0) / (usageMetadata.promptTokenCount ?? 1)) * 100),
+          });
+        }
       }
 
       // Extract grounding sources from the response
