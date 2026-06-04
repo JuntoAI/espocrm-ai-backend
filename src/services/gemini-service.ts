@@ -88,9 +88,28 @@ const TEMPERATURE = 0.3;
 const MAX_OUTPUT_TOKENS = 16384;
 const API_TIMEOUT_MS = 120_000;
 const RETRY_BACKOFF_MS = 2_000;
-const MAX_FUNCTION_CALL_ROUNDS = 40;
+/** Base backoff for 429 rate-limit errors (longer than generic retries). */
+const RATE_LIMIT_BACKOFF_MS = 3_000;
+/** Maximum backoff cap for exponential retry. */
+const MAX_BACKOFF_MS = 12_000;
+/** Maximum number of retries on transient/retryable errors. */
+const MAX_RETRIES = 3;
+const MAX_FUNCTION_CALL_ROUNDS = 25;
+/** Round at which we inject a wind-down instruction to force Gemini to conclude. */
+const WIND_DOWN_ROUND = 20;
+/** Extended round limit when user explicitly asks to continue. */
+const CONTINUE_MAX_ROUNDS = 40;
+/** Extended wind-down round for continue requests. */
+const CONTINUE_WIND_DOWN_ROUND = 35;
+/** Maximum total tool calls before forcing wind-down (regardless of round). */
+const MAX_TOOL_CALLS = 30;
+/** Extended tool call budget for continue requests. */
+const CONTINUE_MAX_TOOL_CALLS = 60;
 /** Maximum size (in characters) for a single tool response before truncation. */
 const MAX_TOOL_RESPONSE_SIZE = 50_000;
+
+/** Detect if a message is a "continue" request. */
+const CONTINUE_PATTERN = /^(go on|continue|keep going|more|weiter|weitermachen|mach weiter)\s*[.!?]?\s*$/i;
 
 // ────────────────────────────────────────────────────────────────
 // System prompt
@@ -199,12 +218,16 @@ You can manage the knowledge base with these tools:
   - Always use the record ID returned by the CRM tools
   - For search results, include a link for each record found
 
-## Efficiency Rules
-- LIMIT yourself to a maximum of 15 tool calls per user message. If you need more data, summarize what you have and ask the user to be more specific.
+## Efficiency Rules — CRITICAL (violating these causes timeouts and errors)
+- HARD LIMIT: You have a maximum of 20 tool calls per user message. After that, the system will terminate your response. Plan your tool usage carefully.
+- Before making any tool call, ask yourself: "Do I already have enough information to answer?" If yes, STOP calling tools and compose your response immediately.
+- Use search_entity with broad filters (e.g., search tasks with status filter) instead of fetching individual records one by one with get_entity.
+- NEVER call get_entity or get_contact in a loop for more than 4 records. If you need details on many records, tell the user what you found from the search results and offer to drill into specific ones.
 - Do NOT exhaustively search every entity type unless the user explicitly asks for a comprehensive overview.
-- When searching for notes, make at most 3 search_notes calls. If you don't find relevant notes in 3 tries, report what you found and move on.
+- When searching for notes, make at most 2 search_notes calls. If you don't find relevant notes in 2 tries, report what you found and move on.
 - Prefer targeted searches (with specific filters) over broad unfiltered searches.
 - If a search returns empty results, do NOT retry with slightly different parameters — report that no results were found.
+- For analytical questions ("which accounts should we...", "what tasks need..."), fetch ONE broad search result set, analyze it in your response, and present your recommendation. Do NOT fetch every related entity.
 - Compose your response as soon as you have enough information to answer the user's question. Do not keep searching for more data "just in case".`;
 
 // ────────────────────────────────────────────────────────────────
@@ -263,6 +286,17 @@ function isRetryableError(error: unknown): boolean {
     if (/\b5\d{2}\b/.test(msg)) {
       return true;
     }
+    // 429 rate limit / quota exhaustion — Vertex burst limits are often
+    // transient and succeed on a backed-off retry.
+    if (
+      msg.includes('429') ||
+      msg.includes('too many requests') ||
+      msg.includes('resource_exhausted') ||
+      msg.includes('resource has been exhausted') ||
+      msg.includes('quota')
+    ) {
+      return true;
+    }
     // "Internal" or "unavailable" server errors
     if (msg.includes('internal') || msg.includes('unavailable')) {
       return true;
@@ -270,10 +304,10 @@ function isRetryableError(error: unknown): boolean {
   }
   // Check for status code on error-like objects
   const obj = error as Record<string, unknown>;
-  if (typeof obj?.status === 'number' && obj.status >= 500) {
+  if (typeof obj?.status === 'number' && (obj.status >= 500 || obj.status === 429)) {
     return true;
   }
-  if (typeof obj?.statusCode === 'number' && obj.statusCode >= 500) {
+  if (typeof obj?.statusCode === 'number' && (obj.statusCode >= 500 || obj.statusCode === 429)) {
     return true;
   }
   return false;
@@ -406,7 +440,7 @@ const TOOL_CATEGORIES: Record<string, { keywords: RegExp; tools: string[] }> = {
     tools: ['create_case', 'search_cases', 'update_case'],
   },
   notes: {
-    keywords: /\b(note|comment|remark|annotation)\b/i,
+    keywords: /\b(note|comment|remark|annotation|latest|update|status|history|what.s.*(new|happening|going on|the latest))\b/i,
     tools: ['add_note', 'search_notes'],
   },
   teams: {
@@ -442,11 +476,10 @@ const TOOL_CATEGORIES: Record<string, { keywords: RegExp; tools: string[] }> = {
 /**
  * Core tools that are ALWAYS included regardless of message keywords.
  *
- * Derived from real usage data: these are the high-frequency workhorse
- * tools the model reaches for across almost every conversation (search_notes
- * alone is the single most-called tool). Keyword matching is unreliable for
- * these because a message like "what's the latest with Acme?" needs note/
- * entity search without ever containing the word "note".
+ * These are the essential CRM query tools needed for almost any question.
+ * Note: search_notes was removed from core tools because the model over-uses
+ * it (16+ calls per request). It's now keyword-gated via the 'notes' category
+ * and a broader keyword pattern that catches "what's the latest" type queries.
  *
  * Backend-only tools (fetch_url, draft_email, knowledge tools) are NOT here —
  * they are reliably keyword-gated and rarely needed, so they stay opt-in.
@@ -457,8 +490,6 @@ const CORE_TOOLS: readonly string[] = [
   'search_entity',
   'get_entity',
   'update_entity',
-  'search_notes',
-  'add_note',
   'search_tasks',
   'get_task',
   'get_contact',
@@ -619,6 +650,20 @@ export class GeminiService {
       throw new Error(`Model "${modelName}" is not initialized.`);
     }
 
+    // Detect "continue" requests — allow more rounds for follow-up exploration
+    const isContinuation = CONTINUE_PATTERN.test(message.trim());
+    const maxRounds = isContinuation ? CONTINUE_MAX_ROUNDS : MAX_FUNCTION_CALL_ROUNDS;
+    const windDownRound = isContinuation ? CONTINUE_WIND_DOWN_ROUND : WIND_DOWN_ROUND;
+    const maxToolCalls = isContinuation ? CONTINUE_MAX_TOOL_CALLS : MAX_TOOL_CALLS;
+
+    if (isContinuation) {
+      logger.info('GeminiService: continuation detected, extending round limits', {
+        maxRounds,
+        windDownRound,
+        maxToolCalls,
+      });
+    }
+
     // Build tools array: relevant function declarations + search grounding.
     //
     // Tool subsetting: instead of sending all 46+ schemas (~10.7K tokens) on
@@ -718,18 +763,38 @@ export class GeminiService {
 
     // Function call loop: keep going until we get a text response
     let round = 0;
-    while (round < MAX_FUNCTION_CALL_ROUNDS) {
+    while (round < maxRounds) {
       round++;
+
+      // Wind-down: force text response when we've used too many rounds OR
+      // too many total tool calls. This prevents infinite spirals where the
+      // model makes 4 parallel calls per round and burns 80+ calls in 20 rounds.
+      let roundToolConfig = {
+        functionCallingConfig: {
+          mode: FunctionCallingMode.AUTO,
+        },
+      };
+
+      const totalToolCallsSoFar = toolsUsed.length;
+      if (round > windDownRound || totalToolCallsSoFar >= maxToolCalls) {
+        logger.warn('GeminiService: wind-down active, forcing text response', {
+          round,
+          windDownRound,
+          totalToolCalls: totalToolCallsSoFar,
+          maxToolCalls,
+        });
+        roundToolConfig = {
+          functionCallingConfig: {
+            mode: FunctionCallingMode.NONE,
+          },
+        };
+      }
 
       const request: GenerateContentRequest = {
         contents,
         systemInstruction,
         tools,
-        toolConfig: {
-          functionCallingConfig: {
-            mode: FunctionCallingMode.AUTO,
-          },
-        },
+        toolConfig: roundToolConfig,
       };
 
       // Send to Gemini with timeout + retry
@@ -796,6 +861,44 @@ export class GeminiService {
           // No tools executed yet — return a clean error message
           return {
             message: 'I encountered a technical issue processing this request. Please try again — starting a new message usually resolves this.',
+            toolsUsed: [],
+            sources: [],
+            usage: { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, totalTokens: totalPromptTokens + totalCompletionTokens, cachedTokens: totalCachedTokens },
+          };
+        }
+
+        // Handle 429 quota exhaustion that survived all retries — give a clear
+        // message instead of bubbling up to a generic "unexpected error".
+        const isRateLimit =
+          errMsg.toLowerCase().includes('429') ||
+          errMsg.toLowerCase().includes('too many requests') ||
+          errMsg.toLowerCase().includes('resource_exhausted') ||
+          errMsg.toLowerCase().includes('resource has been exhausted') ||
+          errMsg.toLowerCase().includes('quota');
+
+        if (isRateLimit) {
+          logger.warn('GeminiService: rate limit exhausted after retries', {
+            round,
+            toolsUsedCount: toolsUsed.length,
+            error: errMsg,
+          });
+
+          if (toolsUsed.length > 0) {
+            const successfulTools = toolsUsed.filter((t) => t.success);
+            const toolSummary = successfulTools
+              .slice(-10)
+              .map((t) => `- **${t.tool}**: ${t.summary}`)
+              .join('\n');
+            return {
+              message: `The AI service is handling a lot of requests right now and hit a rate limit. I gathered some data before that happened:\n\n${toolSummary}\n\nPlease wait a few seconds and say **"go on"** to continue.`,
+              toolsUsed,
+              sources,
+              usage: { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, totalTokens: totalPromptTokens + totalCompletionTokens, cachedTokens: totalCachedTokens },
+            };
+          }
+
+          return {
+            message: 'The AI service is busy right now (rate limit reached). Please wait a few seconds and try again.',
             toolsUsed: [],
             sources: [],
             usage: { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, totalTokens: totalPromptTokens + totalCompletionTokens, cachedTokens: totalCachedTokens },
@@ -962,13 +1065,25 @@ export class GeminiService {
       // Loop continues — Gemini will process the tool results
     }
 
-    // Safety: if we exhausted the function call loop
+    // Safety: if we exhausted the function call loop (should rarely happen
+    // now that wind-down forces NONE after round 20)
     logger.warn('GeminiService: max function call rounds reached', {
-      rounds: MAX_FUNCTION_CALL_ROUNDS,
+      rounds: maxRounds,
+      toolsUsedCount: toolsUsed.length,
     });
+
+    // Build a useful summary from the tools that were executed
+    const successfulTools = toolsUsed.filter((t) => t.success);
+    const toolSummary = successfulTools.length > 0
+      ? successfulTools
+          .slice(-15)
+          .map((t) => `- **${t.tool}**: ${t.summary}`)
+          .join('\n')
+      : 'No tools were successfully executed.';
+
     return {
       message:
-        'I completed several operations but reached the maximum number of steps. Here is what I did so far.',
+        `I gathered data but reached my processing limit before composing a full answer. Here's what I looked at:\n\n${toolSummary}\n\nYou can say **"go on"** and I'll continue where I left off, or ask a more focused question for a complete answer.`,
       toolsUsed,
       sources,
       usage: { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens, totalTokens: totalPromptTokens + totalCompletionTokens, cachedTokens: totalCachedTokens },
@@ -978,28 +1093,51 @@ export class GeminiService {
   // ── Private helpers ─────────────────────────────────────────
 
   /**
-   * Call Gemini with a 30-second timeout and single retry on
-   * 5xx/network errors with 2s backoff.
+   * Call Gemini with a timeout and multiple retries on 5xx/429/network
+   * errors using exponential backoff. 429 (quota) errors in particular
+   * benefit from backed-off retries since Vertex burst limits are transient.
    */
   private async callWithRetry(
     model: GenerativeModel,
     request: GenerateContentRequest,
   ): Promise<GenerateContentResult> {
-    try {
-      return await this.callWithTimeout(model, request);
-    } catch (firstError) {
-      if (isRetryableError(firstError)) {
-        logger.warn('GeminiService: retrying after transient error', {
-          error:
-            firstError instanceof Error
-              ? firstError.message
-              : String(firstError),
-        });
-        await sleep(RETRY_BACKOFF_MS);
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
         return await this.callWithTimeout(model, request);
+      } catch (err) {
+        lastError = err;
+
+        if (!isRetryableError(err) || attempt === MAX_RETRIES) {
+          throw err;
+        }
+
+        // Exponential backoff: 2s, 4s, 8s (capped). 429s need longer waits.
+        const errMsg = err instanceof Error ? err.message.toLowerCase() : '';
+        const isRateLimit =
+          errMsg.includes('429') ||
+          errMsg.includes('too many requests') ||
+          errMsg.includes('resource_exhausted') ||
+          errMsg.includes('resource has been exhausted') ||
+          errMsg.includes('quota');
+
+        const baseBackoff = isRateLimit ? RATE_LIMIT_BACKOFF_MS : RETRY_BACKOFF_MS;
+        const backoff = Math.min(baseBackoff * Math.pow(2, attempt), MAX_BACKOFF_MS);
+
+        logger.warn('GeminiService: retrying after transient error', {
+          attempt: attempt + 1,
+          maxRetries: MAX_RETRIES,
+          backoffMs: backoff,
+          isRateLimit,
+          error: err instanceof Error ? err.message : String(err),
+        });
+
+        await sleep(backoff);
       }
-      throw firstError;
     }
+
+    throw lastError;
   }
 
   /**
