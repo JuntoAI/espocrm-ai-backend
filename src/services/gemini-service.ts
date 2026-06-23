@@ -80,10 +80,39 @@ export interface ChatResult {
 }
 
 // ────────────────────────────────────────────────────────────────
+// Thinking-level model variant support
+// ────────────────────────────────────────────────────────────────
+
+/**
+ * Parse a model identifier that may include a `:thinking-X` suffix.
+ *
+ * Examples:
+ *   "gemini-3.5-flash:thinking-low"     → { baseModel: "gemini-3.5-flash", thinkingLevel: "LOW" }
+ *   "gemini-3.5-flash:thinking-default" → { baseModel: "gemini-3.5-flash", thinkingLevel: undefined }
+ *   "gemini-3.1-pro-preview"            → { baseModel: "gemini-3.1-pro-preview", thinkingLevel: "LOW" }
+ *
+ * When no suffix is present, we default to LOW to prevent unbounded thinking.
+ */
+function parseModelVariant(modelId: string): { baseModel: string; thinkingLevel: string | undefined } {
+  const suffixMatch = modelId.match(/^(.+):thinking-(low|medium|high|default)$/i);
+  if (suffixMatch) {
+    const baseModel = suffixMatch[1];
+    const level = suffixMatch[2].toLowerCase();
+    // 'default' means no thinkingConfig override (let the model use its default thinking)
+    return {
+      baseModel,
+      thinkingLevel: level === 'default' ? undefined : level.toUpperCase(),
+    };
+  }
+  // No suffix — default to LOW for all models to prevent 60s+ thinking delays
+  return { baseModel: modelId, thinkingLevel: 'LOW' };
+}
+
+// ────────────────────────────────────────────────────────────────
 // Constants
 // ────────────────────────────────────────────────────────────────
 
-const DEFAULT_MODEL = 'gemini-3.5-flash';
+const DEFAULT_MODEL = 'gemini-3.5-flash:thinking-low';
 const TEMPERATURE = 0.3;
 const MAX_OUTPUT_TOKENS = 16384;
 const API_TIMEOUT_MS = 120_000;
@@ -107,6 +136,8 @@ const MAX_TOOL_CALLS = 30;
 const CONTINUE_MAX_TOOL_CALLS = 60;
 /** Maximum size (in characters) for a single tool response before truncation. */
 const MAX_TOOL_RESPONSE_SIZE = 50_000;
+/** Consecutive identical tool failures before forcing wind-down (circuit breaker). */
+const MAX_REPEATED_FAILURES = 2;
 
 /** Detect if a message is a "continue" request. */
 const CONTINUE_PATTERN = /^(go on|continue|keep going|more|weiter|weitermachen|mach weiter)\s*[.!?]?\s*$/i;
@@ -221,6 +252,8 @@ You can manage the knowledge base with these tools:
 ## Efficiency Rules — CRITICAL (violating these causes timeouts and errors)
 - HARD LIMIT: You have a maximum of 20 tool calls per user message. After that, the system will terminate your response. Plan your tool usage carefully.
 - Before making any tool call, ask yourself: "Do I already have enough information to answer?" If yes, STOP calling tools and compose your response immediately.
+- NEVER retry a tool call that returned an error with the same or similar arguments. If a tool fails (e.g., "Resource not found", "validation error"), do NOT call it again — inform the user about the failure and suggest alternatives.
+- If a search returns no results for a given entity, do NOT repeatedly search with minor variations. Report that no results were found and move on.
 - Use search_entity with broad filters (e.g., search tasks with status filter) instead of fetching individual records one by one with get_entity.
 - NEVER call get_entity or get_contact in a loop for more than 4 records. If you need details on many records, tell the user what you found from the search results and offer to drill into specific ones.
 - Do NOT exhaustively search every entity type unless the user explicitly asks for a comprehensive overview.
@@ -581,16 +614,26 @@ export class GeminiService {
       this.availableModels.push(this.defaultModel);
     }
 
-    // Pre-initialize GenerativeModel instances for each available model
-    for (const modelName of this.availableModels) {
+    // Pre-initialize GenerativeModel instances for each available model.
+    // Models with a `:thinking-X` suffix get different thinkingConfig.
+    for (const modelId of this.availableModels) {
+      const { baseModel, thinkingLevel } = parseModelVariant(modelId);
+
+      const genConfig: Record<string, unknown> = {
+        temperature: TEMPERATURE,
+        maxOutputTokens: MAX_OUTPUT_TOKENS,
+      };
+
+      // Apply thinkingConfig if a level is specified (undefined = model default)
+      if (thinkingLevel) {
+        genConfig.thinkingConfig = { thinkingLevel };
+      }
+
       this.models.set(
-        modelName,
+        modelId,
         this.vertexAI.getGenerativeModel({
-          model: modelName,
-          generationConfig: {
-            temperature: TEMPERATURE,
-            maxOutputTokens: MAX_OUTPUT_TOKENS,
-          },
+          model: baseModel,
+          generationConfig: genConfig,
         }),
       );
     }
@@ -756,6 +799,12 @@ export class GeminiService {
     const toolsUsed: ToolExecution[] = [];
     const sources: SearchSource[] = [];
 
+    // Circuit breaker: track repeated identical tool failures across rounds.
+    // If the model keeps calling the same tool with the same error N times
+    // (even interleaved with successful calls), we force wind-down.
+    const failureCountBySignature = new Map<string, number>();
+    let circuitBreakerTripped = false;
+
     // Track accumulated token usage across all Gemini rounds
     let totalPromptTokens = 0;
     let totalCompletionTokens = 0;
@@ -782,6 +831,19 @@ export class GeminiService {
           windDownRound,
           totalToolCalls: totalToolCallsSoFar,
           maxToolCalls,
+        });
+        roundToolConfig = {
+          functionCallingConfig: {
+            mode: FunctionCallingMode.NONE,
+          },
+        };
+      }
+
+      // Circuit breaker: if tripped, force text response immediately
+      if (circuitBreakerTripped) {
+        logger.warn('GeminiService: circuit breaker active, forcing text response', {
+          round,
+          failureCounts: Object.fromEntries(failureCountBySignature),
         });
         roundToolConfig = {
           functionCallingConfig: {
@@ -1017,6 +1079,28 @@ export class GeminiService {
           success: te.success,
           ...(te.success ? {} : { error: te.summary }),
         });
+      }
+
+      // Circuit breaker: detect repeated identical failures.
+      // Track every individual tool failure by tool name alone.
+      // If ANY single tool fails MAX_REPEATED_FAILURES times (regardless of
+      // the exact error message), trip the breaker. This catches models that
+      // vary arguments slightly each retry (e.g., "Contact/new" → "Contact/new_contact").
+      const roundFailures = execResult.toolsUsed.filter((te) => !te.success);
+      for (const failure of roundFailures) {
+        const sig = failure.tool;
+        const count = (failureCountBySignature.get(sig) ?? 0) + 1;
+        failureCountBySignature.set(sig, count);
+
+        if (count >= MAX_REPEATED_FAILURES && !circuitBreakerTripped) {
+          circuitBreakerTripped = true;
+          logger.warn('GeminiService: circuit breaker tripped — repeated tool failure', {
+            round,
+            failureCount: count,
+            tool: failure.tool,
+            lastError: failure.summary,
+          });
+        }
       }
 
       // Build function response parts for Gemini (with size cap to prevent context overflow)

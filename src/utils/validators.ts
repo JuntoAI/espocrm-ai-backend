@@ -31,7 +31,7 @@ export type ValidationResult =
  */
 export function getAvailableModels(): string[] {
   const raw = process.env.GEMINI_AVAILABLE_MODELS
-    ?? 'gemini-3.1-pro-preview,gemini-3.1-flash-lite-preview';
+    ?? 'gemini-3.5-flash:thinking-low,gemini-3.5-flash:thinking-default,gemini-3.1-pro-preview,gemini-3.1-flash-lite-preview';
   return raw
     .split(',')
     .map((m) => m.trim())

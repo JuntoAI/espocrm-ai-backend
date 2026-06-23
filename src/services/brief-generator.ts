@@ -420,14 +420,22 @@ export class BriefGenerator {
 
       const vertexAI = new VertexAI(vertexOpts);
 
-      const modelName = process.env.GEMINI_DEFAULT_MODEL ?? 'gemini-2.0-flash';
+      // Parse model variant — the env var may contain a `:thinking-X` suffix
+      // which is not a valid Vertex model name. Extract the base model.
+      const rawModelName = process.env.GEMINI_DEFAULT_MODEL ?? 'gemini-2.0-flash';
+      const suffixMatch = rawModelName.match(/^(.+):thinking-(low|medium|high|default)$/i);
+      const modelName = suffixMatch ? suffixMatch[1] : rawModelName;
 
       return vertexAI.getGenerativeModel({
         model: modelName,
         generationConfig: {
           temperature: 0.7,
           maxOutputTokens: 2048,
-        },
+          // Brief generation is lightweight — use LOW thinking for speed.
+          thinkingConfig: {
+            thinkingLevel: 'LOW',
+          },
+        } as Record<string, unknown>,
       });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unknown error';

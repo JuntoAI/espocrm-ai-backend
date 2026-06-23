@@ -107,7 +107,7 @@ function resolveDefaultModel(): string {
   if (env && env.length > 0) {
     return env;
   }
-  return 'gemini-3.1-flash-lite-preview';
+  return 'gemini-3.5-flash:thinking-low';
 }
 
 /**
